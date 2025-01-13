@@ -1,6 +1,7 @@
 
 import os
 import dotenv
+import pandas as pd
 
 from typing import List, Dict, Any
 from src.video_editing import create_shorts
@@ -43,20 +44,21 @@ class Pipeline:
             raise e
         
     
-
-
-
 def main():
 
-    pipeline = Pipeline(
-        platform='youtube-shorts',
-        video_fp= r'demo\mp4\13 Minutes Minecraft Parkour Gameplay [Free to Use] [Download].mp4',
-        background_music_fp= r'demo\mp3\background_music.mp3',
-        tts_audio_fp= r'demo\mp3\tts_audio.mp3',
-        text='This is a demo video',
-        output_fp= r'demo\mp4\output.mp4',
+    tifu_df = pd.read_csv("tifu.csv")
+    tifu_df = tifu_df.dropna(subset=['text'])
 
-    )
+    for _, row in tifu_df.iterrows():
+        pipeline = Pipeline(
+            platform='youtube-shorts',
+            video_fp= r'demo\mp4\13 Minutes Minecraft Parkour Gameplay [Free to Use] [Download].mp4',
+            background_music_fp= r'demo\mp3\background_music.mp3',
+            tts_audio_fp= row['tts_audio_fp'],
+            text=row['text'],
+            output_fp= r'demo\mp4\output.mp4',
+        )
+
 
 
 if __name__ == '__main__':
