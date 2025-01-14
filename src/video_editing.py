@@ -4,7 +4,9 @@ import pandas as pd
 from typing import List, Tuple, Optional
 import sys
 
-from moviepy import VideoFileClip, AudioFileClip, CompositeVideoClip, TextClip
+from moviepy import VideoFileClip, AudioFileClip, TextClip, CompositeAudioClip, CompositeVideoClip
+from moviepy.video.tools.subtitles import SubtitlesClip
+
 
 def create_shorts(
     video_fp: str,
@@ -15,68 +17,30 @@ def create_shorts(
     json_fp: Optional[str] = None,
     font_path: str = "C:/Windows/Fonts/Arial.ttf"  # Adjust based on your system
 ):
-    with VideoFileClip(video_fp) as video:
-        width, height = video.size
-        target_width = 1080
-        target_height = 1920
+    
+    srt_file = parse_alignment_json(json_fp) if json_fp else None
+    generator = lambda text: TextClip(text = text, font = font_path, font_size = 24, color = 'white')
+    subtitles = SubtitlesClip(srt_file, make_textclip=generator, encoding = 'utf-8',)
 
-        # Crop and resize video
-        new_width = height * 9 / 16
-        x_center = width / 2
-        x_start = int(x_center - new_width / 2)
-        x_end = int(x_center + new_width / 2)
+    tts_audio = AudioFileClip(tts_audio_fp)
+    tts_audio = tts_audio.with_volume_scaled(1.2)
 
-        cropped_video = video.cropped(x1=x_start, x2=x_end, y1=0, y2=height)
-        resized_video = cropped_video.resized(height=target_height)
+    clip = VideoFileClip(video_fp)
+    clip = clip.subclipped(0, tts_audio.duration)
 
-        with AudioFileClip(background_music_fp) as bg_music, AudioFileClip(tts_audio_fp) as tts_audio:
-            if bg_music.duration > resized_video.duration:
-                bg_music = bg_music.subclip(0, resized_video.duration)
-            else:
-                print("Warning: Background music is shorter than video duration.")
+    background_music = AudioFileClip(background_music_fp)
+    background_music = background_music.subclipped(0, None)
+    background_music = background_music.with_volume_scaled(0.2)
 
-            # Combine audio
-            final_audio = tts_audio.with_start(0.3)
-            resized_video = resized_video.with_audio(final_audio)
+    composite_audio = CompositeAudioClip([tts_audio, background_music])
 
-            # Handle subtitles
-            if json_fp and os.path.isfile(json_fp):
-                subtitle_timing = parse_alignment_json(json_fp)
-            else:
-                subtitle_timing = [(text, 0, resized_video.duration)]
+    final_video = CompositeVideoClip([clip, subtitles])
+    final_video = final_video.with_audio(composite_audio)
 
-            print(f"Subtitle timing: {subtitle_timing}")
+    with final_video as video:
+        video.write_videofile(output_fp, codec="libx264", audio_codec="aac", fps=24)
 
-            for i, (start, end) in enumerate(subtitle_timing):
-                text_clip = create_subtitle_clip(
-                    text=start,
-                    start=start,
-                    end=end,
-                    target_width=target_width,
-                    font_path=font_path
-                )
-                subtitle_timing[i] = text_clip
-            
-
-            
-
-            final_clip = CompositeVideoClip([resized_video, *subtitle_timing])
-            final_clip.write_videofile(output_fp, codec="libx264", audio_codec="aac", fps=30)
-
-
-def create_subtitle_clip(
-    text: str, start: float, end: float, target_width: int, font_path: str
-) -> TextClip:
-    return TextClip(
-        text,
-        font=font_path,
-        fontsize=50,
-        color="white",
-        stroke_color="black",
-        stroke_width=2,
-        size=(int(target_width * 0.8), None),
-        method="caption"
-    ).with_start(start).with_end(end).with_position(("center", "bottom"))
+    
 
 def parse_alignment_json(json_fp: str) -> List[Tuple[str, float, float]]:
     with open(json_fp, "r", encoding="utf-8") as f:
@@ -108,7 +72,7 @@ def main():
     df.dropna(subset=["Text"], inplace=True)
 
     example_video = r"demo\mp4\13 Minutes Minecraft Parkour Gameplay [Free to Use] [Download].mp4"
-    background_music = r"demo/mp3/background_music.mp3"
+    background_music = r"demo/mp3/bg_music.mp3"
     json_folder = r"demo/json"
 
     for index, row in df.iterrows():
@@ -129,6 +93,7 @@ def main():
             json_fp=alignment_json_path if alignment_json_path else None,
             font_path="C:/Windows/Fonts/Arial.ttf"  # Ensure the font path is valid
         )
+        sys.exit()
 
     print("\nAll videos processed.")
 

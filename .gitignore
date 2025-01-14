@@ -7,6 +7,8 @@ test.py
 # UUID json dumps
 *.uuid.json
 *.json
+#SRT FILES
+*.srt
 
 #mp3 and mp4
 *.mp3
