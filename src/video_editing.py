@@ -19,8 +19,8 @@ def create_shorts(
 ):
     
     srt_file = parse_alignment_json(json_fp) if json_fp else None
-    generator = lambda text: TextClip(text = text, font = font_path, font_size = 24, color = 'white')
-    subtitles = SubtitlesClip(srt_file, make_textclip=generator, encoding = 'utf-8',)
+    generator = lambda text: TextClip(text = text, font = font_path, font_size = 48, color = 'white', method = 'caption', size = (1000, 400)).with_duration(5)
+    subtitles = SubtitlesClip(srt_file, make_textclip=generator, encoding = 'utf-8')
 
     tts_audio = AudioFileClip(tts_audio_fp)
     tts_audio = tts_audio.with_volume_scaled(1.2)
@@ -34,7 +34,7 @@ def create_shorts(
 
     composite_audio = CompositeAudioClip([tts_audio, background_music])
 
-    final_video = CompositeVideoClip([clip, subtitles])
+    final_video = CompositeVideoClip([clip, subtitles.with_position((0.5,0.5), relative=True)])
     final_video = final_video.with_audio(composite_audio)
 
     with final_video as video:
@@ -42,20 +42,32 @@ def create_shorts(
 
     
 
-def parse_alignment_json(json_fp: str) -> List[Tuple[str, float, float]]:
+def parse_alignment_json(json_fp: str) -> List[Tuple[Tuple[float,float], str]]:
     with open(json_fp, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    list_tuples: [((float,float),str)] = []
-    for alignment_obj in data:
-        text = alignment_obj.get("characters",[])
-        start_time = alignment_obj.get("character_start_times_seconds", [])
-        end_time = alignment_obj.get("character_end_times_seconds", [])
-        
-        for i in range(len(text)):
-            list_tuples.append(((start_time[i], end_time[i]), text[i]))
+    # Create list for timestamp pairs and text
+    segments: List[Tuple[Tuple[float,float], str]] = []
 
-    return list_tuples
+    for alignment_obj in data:
+        # Join characters into a single string
+        text = ''.join(alignment_obj.get("characters", []))
+        
+        # Get start and end times
+        start_times = alignment_obj.get("character_start_times_seconds", [])
+        end_times = alignment_obj.get("character_end_times_seconds", [])
+
+        if start_times and end_times:
+            # Create timestamp tuple ((start, end), text)
+            start = min(start_times)
+            end = max(end_times)
+            print(text, start, end)
+            
+            segments.append(((start, end), text))  # Changed order to match required format
+
+    return segments
+
+
 
 def find_json_by_id(json_id: str, folder: str) -> str:
     if not json_id:
