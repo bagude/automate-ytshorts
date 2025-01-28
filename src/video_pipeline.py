@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import sys
 from typing import List, Tuple, Optional, Dict
 from moviepy import (
     VideoFileClip,
@@ -37,7 +38,7 @@ class VideoPipeline:
             try:
                 clip.close()
             except Exception as e:
-                logging.warning(f"Failed to close clip: {e}")
+                logging.warning("Failed to close clip: %s", str(e))
 
     def execute(
             self,
@@ -77,9 +78,10 @@ class VideoPipeline:
             final = self.components['compositor'].compose(video_clip, subtitles_clip, audio_clip)
             self.components['compositor'].render(final, output_path)
             
-            logging.info(f"Successfully created video: {output_path}")
+            logging.info("Successfully created video: %s", output_path)
         except Exception as e:
-            logging.error(f"Pipeline failed: {str(e)}")
+            logging.error("An error occurred: %s", str(e))
+            exit(1)
             
 
             
@@ -109,5 +111,5 @@ if __name__ == "__main__":
                 subtitle_json = 'subtitle.json'
             )
     except Exception as e:
-        logging.error(f"An error occurred: {e}")
+        logging.error("An error occurred: %s", str(e))
         exit(1)
