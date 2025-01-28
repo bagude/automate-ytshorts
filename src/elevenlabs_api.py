@@ -5,7 +5,7 @@ import requests
 import sys
 import csv
 import uuid
-from load_env import load_env
+from src.load_env import load_env
 import logging
 
 logging.basicConfig(level=logging.INFO,
