@@ -1,11 +1,17 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
 import json
 import csv
 
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.common.exceptions import WebDriverException
+
 def setup_webdriver(headless=True) -> webdriver.Chrome:
-    """Set up the WebDriver with optional headless mode and user-agent spoofing."""
+    """Set up the WebDriver with optional headless mode and user-agent spoofing.
+    
+    Returns:
+        webdriver.Chrome: The configured WebDriver instance
+    """
     chrome_options = Options()
     if headless:
         chrome_options.add_argument("--headless")
@@ -13,6 +19,16 @@ def setup_webdriver(headless=True) -> webdriver.Chrome:
     return webdriver.Chrome(options=chrome_options)
 
 def get_posts(feed, retries=3, timeout=10) -> dict:
+    """Get posts from a Reddit feed.
+    
+    Args:
+        feed (str): The name of the Reddit feed to crawl
+        retries (int): The number of retries to attempt if the request fails
+        timeout (int): The timeout for the request in seconds
+    
+    Returns:
+        dict: A dictionary of posts with their metadata
+    """
     tries = 0
     success = False
     posts = {}  # Initialize posts dictionary outside try block
@@ -21,6 +37,7 @@ def get_posts(feed, retries=3, timeout=10) -> dict:
         driver = setup_webdriver()
         try:
             url = f"https://www.reddit.com/r/{feed}.json"
+            driver.set_page_load_timeout(timeout)
             driver.get(url)
             json_data = driver.find_element(By.TAG_NAME, 'pre').text
             response = json.loads(json_data)
@@ -42,7 +59,7 @@ def get_posts(feed, retries=3, timeout=10) -> dict:
                         'upvote_ratio': upvote_ratio,
                         "text": text
                     }
-        except Exception as e:
+        except (WebDriverException, json.JSONDecodeError, KeyError) as e:
             print(f"An error occurred: {e}")
         finally:
             driver.quit()
@@ -51,13 +68,28 @@ def get_posts(feed, retries=3, timeout=10) -> dict:
     return posts
 
 def parse_text(text: str) -> str:
-    """Parse text to remove unwanted characters and whitespace."""    
+    """Parse text to remove unwanted characters and whitespace.
+    
+    Args:
+        text (str): The text to parse
+    
+    Returns:
+        str: The parsed text
+    """
     text = text.replace('\n', ' ')
     text = text.replace('\\', ' ')
     return text
 
 def write_to_csv(posts: dict, filename: str):
-    """Write post data to a CSV file."""
+    """Write post data to a CSV file.
+    
+    Args:
+        posts (dict): A dictionary of posts with their metadata
+        filename (str): The name of the file to write to
+    
+    Returns:
+        None
+    """
     with open(filename, 'w', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
         writer.writerow(['Title', 'Author', 'Permalink', 'Upvote Ratio', 'Text'])
@@ -71,6 +103,7 @@ def write_to_csv(posts: dict, filename: str):
             ])
 
 def main():
+    """Main function to execute the Reddit crawling and CSV writing process."""
     feed = 'tifu'
     posts = get_posts(feed)
     posts = {k: {**v, 'text': parse_text(v['text'])} for k, v in posts.items()}
