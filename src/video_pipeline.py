@@ -15,6 +15,27 @@ from moviepy.video.tools.subtitles import SubtitlesClip
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+
+class InputValidator:
+    def validate_inputs(self, *args):
+        pass
+
+class AudioProcessor:
+    def process_audio(self, *args):
+        pass
+
+class VideoProcessor:
+    def process_video(self, *args):
+        pass    
+
+class SubtitleEngine:
+    def generate_subtitles(self, *args):
+        pass
+
+class VideoCompositor:
+    def compose(self, *args):
+        pass    
+
 class VideoPipeline:
     def __init__(self, config: Dict):
         self.config = config
@@ -111,5 +132,5 @@ if __name__ == "__main__":
                 subtitle_json = 'subtitle.json'
             )
     except Exception as e:
-        logging.error("An error occurred: %s", str(e))
-        exit(1)
+        logging.error(f"An error occurred: {e}")
+        sys.exit(1)

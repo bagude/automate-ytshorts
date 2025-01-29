@@ -192,7 +192,7 @@ def _process_single_row(row, headers, voice_id, mp3_folder, json_folder, mode):
         return {
             **row,
             "output_mp3_path": "ERROR",
-            "json_id": "ERROR"
+            "json_id": f"ERROR: {str(e)}"
         }
 
 def process_csv(
@@ -247,7 +247,7 @@ def process_csv(
         logging.info("Output CSV: %s", output_csv_path)
     except Exception as e:
         logging.critical("CSV processing failed: %s", str(e))
-        raise
+        # Don't raise the exception, just log it
 
 def main():
     """Entry point for the ElevenLabs API processing script.
