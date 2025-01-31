@@ -216,12 +216,87 @@ class AudioProcessor:
             raise IOError(f"Error processing audio files: {str(e)}") from e
 
 
-class VideoProcessor():
+class VideoProcessor:
     def __init__(self, config: Dict):
         self.config = config
+        self._parse_config(config)
 
-    def process_video(self, *args):
-        pass
+        self.w_detail = None
+        self.h_detail = None
+        self.duration = None
+
+    def _parse_config(self, config: Dict) -> None:
+        """Extracts relevant configuration values with defaults."""
+        self.fade_duration = config.get('fade_duration', 0.5)
+        self.resolution = config.get('vertical_resolution', (1080, 1920))
+        self.loop_overlap = config.get('loop_overlap_duration', 1.0)
+
+    def _resize_video(self, clip: VideoFileClip) -> VideoFileClip:
+        """Resizes video to match target resolution while maintaining aspect ratio."""
+        return clip.with_effects([vfx.Resize(height=self.resolution[0])])
+
+    def _loop_video_to_duration(self, clip: VideoFileClip, target_duration: float) -> VideoFileClip:
+        """Loops or trims video to match target duration.
+
+        If video is shorter than target, makes it loopable and extends it.
+        If video is longer than target, subclips it."""
+        if clip.duration >= target_duration:
+            return clip.subclipped(0, target_duration)
+
+        # Make the clip loopable with a smooth transition
+        loopable = clip.with_effects([vfx.MakeLoopable(self.loop_overlap)])
+        # Loop it to reach target duration
+        return loopable.loop(n=None, duration=target_duration)
+
+    def _apply_video_effects(self, clip: VideoFileClip) -> VideoFileClip:
+        """Applies fade in/out effects to video."""
+        return clip.with_effects([vfx.CrossFadeIn(self.fade_duration), vfx.CrossFadeOut(self.fade_duration)])
+
+    def _report_dimensions(self, clip: VideoFileClip) -> None:
+        """Reports the dimensions of the video."""
+        self.w_detail = clip.size[0]
+        self.h_detail = clip.size[1]
+        self.duration = clip.duration
+
+        logging.info("Video dimensions: %dx%d", self.w_detail, self.h_detail)
+        logging.info("Video duration: %s", self.duration)
+
+    def process_video(self, video_path: str, target_duration: float) -> VideoFileClip:
+        """Processes video by loading, resizing, applying effects, and adjusting duration.
+
+        Args:
+            video_path: Path to input video file
+            target_duration: Target duration to match (usually from audio)
+
+        Returns:
+            VideoFileClip: Processed video clip ready for composition
+
+        Raises:
+            FileNotFoundError: If video file doesn't exist
+            IOError: If there are issues processing the video
+        """
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"Video file not found: {video_path}")
+
+        try:
+            # Load video
+            video_clip = VideoFileClip(video_path)
+            self._report_dimensions(video_clip)
+            # Process the video
+            video_clip = self._resize_video(video_clip)
+            video_clip = self._loop_video_to_duration(
+                video_clip, target_duration)
+            video_clip = self._apply_video_effects(video_clip)
+            self._report_dimensions(video_clip)
+
+            return video_clip
+
+        except (IOError, OSError) as e:
+            try:
+                video_clip.close()
+            except (IOError, OSError):
+                pass
+            raise IOError(f"Error processing video file: {str(e)}") from e
 
 
 class SubtitleEngine:
@@ -240,7 +315,7 @@ class VideoPipeline:
         self.components = {
             'validator': InputValidator(),
             'audio_processor': AudioProcessor(config),
-            # 'video_processor': VideoProcessor(config),
+            'video_processor': VideoProcessor(config),
             # 'subtitle_engine': SubtitleEngine(config),
             # 'compositor': VideoCompositor(config)
         }
@@ -283,12 +358,12 @@ class VideoPipeline:
                 tts_path, music_path)
             self.active_clips.append(audio_clip)
 
-            sys.exit(0)
-
             # 3. Video processing
             video_clip = self.components['video_processor'].process_video(
                 video_path, audio_clip.duration)
             self.active_clips.append(video_clip)
+
+            sys.exit(0)
 
             # Validate curation compatibility
             self.components['validator'].validate_durations(
