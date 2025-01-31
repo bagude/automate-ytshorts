@@ -300,8 +300,163 @@ class VideoProcessor:
 
 
 class SubtitleEngine:
-    def generate_subtitles(self, *args):
-        pass
+    def __init__(self, config: Dict):
+        self.config = config
+        self._parse_config(config)
+
+    def _parse_config(self, config: Dict) -> None:
+        self.font_path = config.get('font_path', 'Arial-Bold')
+        self.font_size = config.get('font_size', 70)
+        self.subtitle_color = config.get('subtitle_color', 'white')
+        self.stroke_color = config.get('stroke_color', 'black')
+        self.stroke_width = config.get('stroke_width', 2)
+        self.resolution = config.get('vertical_resolution', (1080, 1920))
+
+    def _create_srt_file_from_json(self, subtitle_data: Dict) -> List[Tuple[Tuple[float, float], str]]:
+        """Converts JSON timing data into word-based SRT-compatible subtitle entries.
+
+        Creates progressive subtitles that accumulate up to 6 words, then starts fresh.
+        For example:
+        t1: "The"
+        t2: "The quick"
+        t3: "The quick brown"
+        t4: "The quick brown fox"
+        t5: "The quick brown fox jumps"
+        t6: "The quick brown fox jumps over"
+        t7: "the"
+        t8: "the lazy"
+        t9: "the lazy dog"
+
+        Args:
+            subtitle_data: Dictionary containing 'characters' and 'character_start_times_seconds'
+
+        Returns:
+            List of tuples containing ((start_time, end_time), text) for each subtitle segment
+        """
+        max_words_per_line = 6
+
+        # Initialize variables for word processing
+        words = []
+        word_timings = []
+        current_word = []
+        current_word_start = subtitle_data['character_start_times_seconds'][0]
+
+        # Group characters into words with their timings
+        for i, (char, time) in enumerate(zip(subtitle_data['characters'], subtitle_data['character_start_times_seconds'])):
+            current_word.append(char)
+
+            if char == ' ' or i == len(subtitle_data['characters']) - 1:
+                word = ''.join(current_word).strip()
+                if word:
+                    words.append(word)
+                    word_timings.append((current_word_start, time))
+                current_word = []
+                if i < len(subtitle_data['characters']) - 1:
+                    current_word_start = subtitle_data['character_start_times_seconds'][i + 1]
+
+        # Create subtitle entries
+        subtitle_entries = []
+        for i in range(len(words)):
+            # Calculate which group this word belongs to
+            group_number = i // max_words_per_line
+            # Get the start index for the current group
+            group_start = group_number * max_words_per_line
+            # Get words for current progressive subtitle
+            current_words = words[group_start:i + 1]
+            current_text = ' '.join(current_words)
+
+            start_time = word_timings[i][0]
+
+            # For the last word, extend duration by 2 seconds
+            # Otherwise, use the start time of the next word
+            if i == len(words) - 1:
+                end_time = word_timings[i][1] + 2.0
+            else:
+                end_time = word_timings[i+1][0]
+
+            subtitle_entries.append(((start_time, end_time), current_text))
+
+        logging.info("Subtitle entries: %s", subtitle_entries)
+        return subtitle_entries
+
+    def generate_subtitles(self, text: str, duration: float, subtitle_json: Optional[str] = None) -> SubtitlesClip:
+        """
+        Generates a SubtitlesClip for the video using the provided text and timing information.
+
+        If a subtitle JSON file is provided, it is expected to contain data in the following format:
+        [
+            {
+                "characters": ["T", "h", "i", "s", " ", "i", "s", ...],
+                "character_start_times_seconds": [0.0, 0.081, 0.151, ...]
+            }
+            ...
+        ]
+
+        The subtitle is built as a progressive(cumulative) text reveal based on character timings.
+        For each character, the text is updated from the beginning up to that character.
+        The end time for each segment is set to the next character's start time, and for the final
+        character it is set to the total duration of the audio.
+
+        If subtitle_json is not provided or fails to load, the entire text is rendered across the entire duration.
+
+        Args:
+            text: The complete subtitle text.
+            duration: Total duration of the audio/video.
+            subtitle_json: Optional path to a JSON file with character timing information.
+
+        Returns:
+            SubtitlesClip: A moviepy SubtitlesClip generated based on the timing data.
+        """
+        def text_clip_generator(txt):
+            return TextClip(
+                text=txt,
+                font=self.font_path,
+                font_size=self.font_size,
+                color=self.subtitle_color,
+                stroke_color=self.stroke_color,
+                stroke_width=self.stroke_width,
+                method="caption",
+                size=(self.resolution[0], None)
+            )
+
+        if subtitle_json is not None:
+            try:
+                with open(subtitle_json, 'r', encoding='utf-8') as f:
+                    subtitle_data_list = json.load(f)
+
+                # Combine all segments into one continuous sequence
+                all_characters = []
+                all_start_times = []
+
+                for segment in subtitle_data_list:
+                    if not all(key in segment for key in ['characters', 'character_start_times_seconds']):
+                        raise ValueError("Invalid subtitle JSON format")
+
+                    if len(segment['characters']) != len(segment['character_start_times_seconds']):
+                        raise ValueError(
+                            "Mismatch between characters and start times")
+
+                    all_characters.extend(segment['characters'])
+                    all_start_times.extend(
+                        segment['character_start_times_seconds'])
+
+                subtitle_data = {
+                    'characters': all_characters,
+                    'character_start_times_seconds': all_start_times
+                }
+
+                subtitle_entries = self._create_srt_file_from_json(
+                    subtitle_data)
+
+                subtitles = SubtitlesClip(
+                    subtitle_entries, make_textclip=text_clip_generator, encoding='utf-8')
+                return subtitles
+
+            except (IOError, OSError, ValueError) as e:
+                logging.error("Error generating subtitles: %s", str(e))
+                raise e
+        else:
+            return SubtitlesClip([], make_textclip=text_clip_generator, encoding='utf-8')
 
 
 class VideoCompositor:
@@ -316,7 +471,7 @@ class VideoPipeline:
             'validator': InputValidator(),
             'audio_processor': AudioProcessor(config),
             'video_processor': VideoProcessor(config),
-            # 'subtitle_engine': SubtitleEngine(config),
+            'subtitle_engine': SubtitleEngine(config),
             # 'compositor': VideoCompositor(config)
         }
         self.active_clips = []
@@ -363,16 +518,12 @@ class VideoPipeline:
                 video_path, audio_clip.duration)
             self.active_clips.append(video_clip)
 
-            sys.exit(0)
-
-            # Validate curation compatibility
-            self.components['validator'].validate_durations(
-                audio_clip.duration, video_clip.duration)
-
             # 4. Subtitle generation
             subtitles_clip = self.components['subtitle_engine'].generate_subtitles(
                 text, audio_clip.duration, subtitle_json)
             self.active_clips.append(subtitles_clip)
+
+            sys.exit(0)
 
             # 5. Composition
             final = self.components['compositor'].compose(
@@ -386,7 +537,7 @@ class VideoPipeline:
 
 
 DEFAULT_CONFIG = {
-    'font_path': 'Arial-Bold',
+    'font_path': r'demo\font_at.ttf',
     'font_size': 70,
     'subtitle_color': 'white',
     'stroke_color': 'black',
@@ -407,7 +558,7 @@ if __name__ == "__main__":
                 music_path=r'demo\mp3\bg_music.mp3',
                 video_path=r'demo\mp4\13 Minutes Minecraft Parkour Gameplay [Free to Use] [Download].mp4',
                 text='Hello, world!',
-                subtitle_json='subtitle.json'
+                subtitle_json=r'demo\json\26d5d1bb-c2b2-419d-98dd-bdf5334e5a23.json'
             )
     except Exception as e:
         logging.error(f"An error occurred: {e}")
