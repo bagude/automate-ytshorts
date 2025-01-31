@@ -1,6 +1,7 @@
 import os
 import pytest
-from src.video_pipeline import InputValidator
+from moviepy import AudioFileClip, CompositeAudioClip
+from src.video_pipeline import InputValidator, AudioProcessor
 
 
 class TestInputValidator:
@@ -73,3 +74,55 @@ class TestInputValidator:
     def test_validate_durations_equal(self, validator):
         """Test duration validation with equal durations."""
         validator.validate_durations(audio_duration=10.0, video_duration=10.0)
+
+
+class TestAudioProcessor:
+    @pytest.fixture
+    def config(self):
+        """Creates a test configuration."""
+        return {
+            'tts_volume': 1.2,
+            'music_volume': 0.3,
+            'fade_duration': 0.5
+        }
+
+    @pytest.fixture
+    def processor(self, config):
+        """Creates an AudioProcessor instance for testing."""
+        return AudioProcessor(config)
+
+    @pytest.fixture
+    def test_audio_files(self, tmp_path):
+        """Creates temporary test audio files."""
+        # Create test directory structure
+        mp3_dir = tmp_path / "mp3"
+        mp3_dir.mkdir()
+
+        # Create test audio files (minimal valid MP3 content)
+        tts_file = mp3_dir / "test_tts.mp3"
+        music_file = mp3_dir / "test_music.mp3"
+
+        # Write minimal MP3 headers (not actual audio content, just for testing)
+        with open(tts_file, 'wb') as f:
+            f.write(b'ID3' + b'\x00' * 100)  # Minimal MP3 header
+        with open(music_file, 'wb') as f:
+            f.write(b'ID3' + b'\x00' * 100)  # Minimal MP3 header
+
+        return {
+            'tts': str(tts_file),
+            'music': str(music_file)
+        }
+
+    def test_parse_config(self, processor, config):
+        """Test configuration parsing."""
+        assert processor.tts_volume == config['tts_volume']
+        assert processor.music_volume == config['music_volume']
+        assert processor.fade_duration == config['fade_duration']
+
+    def test_process_audio_missing_file(self, processor):
+        """Test error handling for missing audio files."""
+        with pytest.raises(FileNotFoundError):
+            processor.process_audio(
+                'nonexistent_tts.mp3',
+                'nonexistent_music.mp3'
+            )
