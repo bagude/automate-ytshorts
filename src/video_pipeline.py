@@ -362,6 +362,115 @@ class SubtitleEngine:
             logging.error("Error detecting JSON format: %s", str(e))
             raise
 
+    def _subdivide_whisper_segment(self, text: str, start_time: float, end_time: float, max_chars: int = 50) -> List[Tuple[Tuple[float, float], str]]:
+        """Subdivides a Whisper segment into smaller chunks based on text length and punctuation.
+
+        Args:
+            text (str): The text to subdivide
+            start_time (float): Start time of the segment
+            end_time (float): End time of the segment
+            max_chars (int): Maximum characters per subdivision
+
+        Returns:
+            List[Tuple[Tuple[float, float], str]]: List of timing tuples and text chunks
+        """
+        # Clean the text
+        text = text.strip()
+        if not text:
+            return []
+
+        # If text is short enough, return as is
+        if len(text) <= max_chars:
+            return [((start_time, end_time), text)]
+
+        # Define punctuation hierarchy for splitting
+        # First tier: Strong breaks that always cause a split
+        strong_breaks = {'.', '!', '?'}
+        # Second tier: Medium breaks that can cause splits if chunk is long enough
+        medium_breaks = {';', ':', '—', '--'}
+        # Third tier: Weak breaks that only split if near max length
+        weak_breaks = {',', ')', ']', '}', '"'}
+
+        def find_best_split_point(text: str, max_length: int) -> int:
+            """Find the best point to split the text based on punctuation hierarchy."""
+            if len(text) <= max_length:
+                return len(text)
+
+            # Look for strong breaks first
+            for i in range(max_length, 0, -1):
+                if text[i-1] in strong_breaks:
+                    return i
+
+            # Then look for medium breaks if chunk is at least 70% of max_length
+            min_length_for_medium = int(max_length * 0.7)
+            for i in range(max_length, min_length_for_medium, -1):
+                if text[i-1] in medium_breaks:
+                    return i
+
+            # Then look for weak breaks if chunk is at least 80% of max_length
+            min_length_for_weak = int(max_length * 0.8)
+            for i in range(max_length, min_length_for_weak, -1):
+                if text[i-1] in weak_breaks:
+                    return i
+
+            # If no punctuation found, look for the last space before max_length
+            last_space = text[:max_length].rfind(' ')
+            if last_space > 0:
+                return last_space
+
+            # If no space found, force split at max_length
+            return max_length
+
+        # Split text into chunks using punctuation hierarchy
+        chunks = []
+        current_pos = 0
+        text_length = len(text)
+
+        while current_pos < text_length:
+            remaining_text = text[current_pos:]
+            split_point = find_best_split_point(remaining_text, max_chars)
+
+            chunk = remaining_text[:split_point].strip()
+            if chunk:  # Only add non-empty chunks
+                chunks.append(chunk)
+            current_pos += split_point
+
+        # Calculate timing for each chunk
+        num_chunks = len(chunks)
+        chunk_duration = total_duration = end_time - start_time
+
+        # Adjust timing based on punctuation and chunk length
+        result = []
+        total_chars = sum(len(chunk) for chunk in chunks)
+        current_time = start_time
+
+        for i, chunk in enumerate(chunks):
+            # Calculate duration proportional to chunk length with punctuation weight
+            chunk_weight = 1.0
+            if chunk[-1] in strong_breaks:
+                chunk_weight = 1.2  # Give more time for strong breaks
+            elif chunk[-1] in medium_breaks:
+                chunk_weight = 1.1  # Give slightly more time for medium breaks
+
+            # Calculate this chunk's duration
+            char_ratio = len(chunk) / total_chars
+            this_duration = (chunk_duration * char_ratio) * chunk_weight
+
+            # Ensure we don't exceed total duration
+            if current_time + this_duration > end_time:
+                this_duration = end_time - current_time
+
+            chunk_end = current_time + this_duration
+
+            # Add small gap between chunks, except for the last one
+            if i < num_chunks - 1:
+                chunk_end -= 0.1
+
+            result.append(((current_time, chunk_end), chunk))
+            current_time = chunk_end + 0.1  # Start next chunk after the gap
+
+        return result
+
     def _process_whisper_json(self, json_path: str) -> List[Tuple[Tuple[float, float], str]]:
         """Process Whisper JSON output to create subtitle entries.
 
@@ -386,13 +495,20 @@ class SubtitleEngine:
             subtitle_entries = []
             for segment in data['segments']:
                 if all(key in segment for key in ['start', 'end', 'text']):
-                    # Create timing tuple and clean text
-                    timing = (segment['start'], segment['end'])
+                    # Get timing and text
+                    start_time = segment['start']
+                    end_time = segment['end']
                     text = segment['text'].strip()
 
-                    # Only add if there's actual text content
+                    # Only process if there's actual text content
                     if text:
-                        subtitle_entries.append((timing, text))
+                        # Subdivide long segments
+                        subdivided_entries = self._subdivide_whisper_segment(
+                            text=text,
+                            start_time=start_time,
+                            end_time=end_time
+                        )
+                        subtitle_entries.extend(subdivided_entries)
                 else:
                     logging.warning("Skipping invalid segment in Whisper JSON")
 
