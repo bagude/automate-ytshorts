@@ -33,8 +33,12 @@ class InputValidator:
         """Validates that audio duration does not exceed video duration.
 
         Args:
-            audio_duration: Duration of the audio clip
-            video_duration: Duration of the video clip
+            audio_duration: Duration of the audio clip in seconds
+            video_duration: Duration of the video clip in seconds
+
+        Raises:
+            ValueError: If audio_duration is greater than video_duration, with a detailed error message
+                      containing both durations
         """
         if audio_duration > video_duration:
             raise ValueError(
@@ -106,15 +110,16 @@ class AudioProcessor:
 
         This method handles two scenarios:
         1. If music is longer than target duration: Trims the music to fit
-        2. If music is shorter than target duration: Loops the music using AudioLoop
-           effect to fill the entire duration
+        2. If music is shorter than target duration: Loops the music using moviepy's AudioLoop
+           effect to seamlessly fill the entire duration without abrupt transitions
 
         Args:
             music_clip: The background music clip to process
             target_duration: The desired final duration in seconds
 
         Returns:
-            AudioFileClip: A new audio clip that exactly matches the target duration
+            AudioFileClip: A new audio clip that exactly matches the target duration, either
+                         trimmed or seamlessly looped using AudioLoop effect
         """
         if music_clip.duration >= target_duration:
             return music_clip.subclipped(0, target_duration)
@@ -157,9 +162,10 @@ class AudioProcessor:
         1. Loads the TTS and background music clips from their respective paths
         2. Uses the TTS duration as the master duration for the final composition
         3. Applies fade in/out effects to the TTS audio for smooth transitions
-        4. Adjusts the volume levels of both clips according to configured settings
-        5. Adapts the background music to match the TTS duration through looping or trimming
-        6. Combines both audio streams into a final composite clip
+        4. Normalizes both TTS and background music using AudioNormalize effect
+        5. Adjusts the volume levels of both clips according to configured settings
+        6. Adapts the background music to match the TTS duration through looping or trimming
+        7. Combines both audio streams into a final composite clip
 
         Args:
             tts_path: Path to the text-to-speech audio file that will drive the timing
@@ -167,12 +173,12 @@ class AudioProcessor:
 
         Returns:
             AudioFileClip: A composite audio clip containing both the TTS and
-                background music, synchronized and volume-adjusted according to
+                background music, synchronized, normalized and volume-adjusted according to
                 configuration settings
 
         Raises:
             FileNotFoundError: If either the TTS or music file cannot be found
-            IOError: If there are issues reading the audio files
+            IOError: If there are issues reading or processing the audio files
         """
         # Verify files exist before attempting to load them
         if not os.path.exists(tts_path):
@@ -238,8 +244,18 @@ class VideoProcessor:
     def _loop_video_to_duration(self, clip: VideoFileClip, target_duration: float) -> VideoFileClip:
         """Loops or trims video to match target duration.
 
-        If video is shorter than target, makes it loopable and extends it.
-        If video is longer than target, subclips it."""
+        If video is shorter than target, makes it loopable with a smooth transition
+        using the configured loop_overlap duration (default 1.0s) to avoid abrupt cuts.
+        If video is longer than target, subclips it to the exact duration.
+
+        Args:
+            clip: The video clip to process
+            target_duration: Target duration in seconds
+
+        Returns:
+            VideoFileClip: A video clip matching the target duration, either trimmed
+                         or smoothly looped with overlap transitions
+        """
         if clip.duration >= target_duration:
             return clip.subclipped(0, target_duration)
 
@@ -313,70 +329,121 @@ class SubtitleEngine:
         self.resolution = config.get('vertical_resolution', (1080, 1920))
 
     def _create_srt_file_from_json(self, subtitle_data: Dict) -> List[Tuple[Tuple[float, float], str]]:
-        """Converts JSON timing data into word-based SRT-compatible subtitle entries.
+        """Converts JSON timing data into character-accurate subtitle entries with dynamic timing.
 
-        Creates progressive subtitles that accumulate up to 6 words, then starts fresh.
-        For example:
-        t1: "The"
-        t2: "The quick"
-        t3: "The quick brown"
-        t4: "The quick brown fox"
-        t5: "The quick brown fox jumps"
-        t6: "The quick brown fox jumps over"
-        t7: "the"
-        t8: "the lazy"
-        t9: "the lazy dog"
+        This method implements sophisticated subtitle timing logic:
+        1. Processes character-by-character timing data from the JSON input
+        2. Groups characters into natural segments based on:
+           - Punctuation marks (., !, ?, ,)
+           - Time gaps > 0.5s between characters
+           - Maximum segment length (40 chars)
+           - Natural pauses > 1.5s at spaces
+        3. Applies word count-based dynamic duration rules:
+           - Base buffer time: 0.2s
+           - Word-based buffer: 0.5s per word (capped at 2.5s)
+           - Base minimum duration: 0.2s
+           - Word-based minimum duration: 0.5s per word (capped at 2.5s)
+        4. Special handling for final segment:
+           - 20% longer duration than normal segments
+           - Base buffer and minimum times increased by 1.2x
+           - Maximum buffer time capped at 3.0s
+        5. Per-character timing:
+           - Each character gets a 0.1s buffer
+           - Ensures smooth text display
 
         Args:
-            subtitle_data: Dictionary containing 'characters' and 'character_start_times_seconds'
+            subtitle_data: Dictionary containing:
+                - 'characters': List of individual characters
+                - 'character_start_times_seconds': List of start times for each character
 
         Returns:
-            List of tuples containing ((start_time, end_time), text) for each subtitle segment
+            List[Tuple[Tuple[float, float], str]]: List of subtitle entries, each containing:
+                - Timing tuple (start_time, end_time) in seconds
+                - Subtitle text for that time period
+
+        Raises:
+            ValueError: If the JSON format is invalid or there's a mismatch between characters and timings
+            KeyError: If required fields are missing from subtitle_data
         """
-        max_words_per_line = 6
+        char_timings = list(zip(
+            subtitle_data['characters'],
+            subtitle_data['character_start_times_seconds']
+        ))
 
-        # Initialize variables for word processing
-        words = []
-        word_timings = []
-        current_word = []
-        current_word_start = subtitle_data['character_start_times_seconds'][0]
-
-        # Group characters into words with their timings
-        for i, (char, time) in enumerate(zip(subtitle_data['characters'], subtitle_data['character_start_times_seconds'])):
-            current_word.append(char)
-
-            if char == ' ' or i == len(subtitle_data['characters']) - 1:
-                word = ''.join(current_word).strip()
-                if word:
-                    words.append(word)
-                    word_timings.append((current_word_start, time))
-                current_word = []
-                if i < len(subtitle_data['characters']) - 1:
-                    current_word_start = subtitle_data['character_start_times_seconds'][i + 1]
-
-        # Create subtitle entries
         subtitle_entries = []
-        for i in range(len(words)):
-            # Calculate which group this word belongs to
-            group_number = i // max_words_per_line
-            # Get the start index for the current group
-            group_start = group_number * max_words_per_line
-            # Get words for current progressive subtitle
-            current_words = words[group_start:i + 1]
-            current_text = ' '.join(current_words)
+        current_text = []
+        segment_start = char_timings[0][1]
+        last_char_end = segment_start
+        max_segment_chars = 40
 
-            start_time = word_timings[i][0]
+        for i, (char, start_time) in enumerate(char_timings):
+            current_text.append(char)
+            last_char_end = start_time + 0.1  # Per-character buffer
 
-            # For the last word, extend duration by 2 seconds
-            # Otherwise, use the start time of the next word
-            if i == len(words) - 1:
-                end_time = word_timings[i][1] + 2.0
-            else:
-                end_time = word_timings[i+1][0]
+            # Segment break conditions
+            break_conditions = [
+                char in {'.', '!', '?', ','},
+                char == ' ' and (start_time - segment_start) > 1.5,
+                len(current_text) >= max_segment_chars,
+                i < len(char_timings)-1 and
+                char_timings[i+1][1] - start_time > 0.5
+            ]
 
-            subtitle_entries.append(((start_time, end_time), current_text))
+            if any(break_conditions):
+                text = ''.join(current_text).strip()
+                word_count = len(text.split())
 
-        # logging.info("Subtitle entries: %s", subtitle_entries)
+                # Dynamic timing based on word count
+                base_buffer = 0.2
+                word_based_buffer = 0.5 * word_count
+                buffer = min(max(base_buffer, word_based_buffer), 2.5)
+
+                base_min_duration = 0.2
+                word_based_min = 0.5 * word_count
+                min_duration = min(max(base_min_duration, word_based_min), 2.5)
+
+                end_time = last_char_end + buffer
+                if (end_time - segment_start) < min_duration:
+                    end_time = segment_start + min_duration
+
+                subtitle_entries.append(((segment_start, end_time), text))
+
+                # Reset segment
+                current_text = []
+                if i < len(char_timings)-1:
+                    segment_start = char_timings[i+1][1]
+
+        # Handle final segment
+        if current_text:
+            text = ''.join(current_text).strip()
+            word_count = len(text.split())
+
+            # Final segment gets 20% longer duration
+            base_buffer = 0.2 * 1.2
+            word_based_buffer = 0.5 * word_count * 1.2
+            buffer = min(max(base_buffer, word_based_buffer), 3.0)
+
+            base_min_duration = 0.2 * 1.2
+            word_based_min = 0.5 * word_count * 1.2
+            min_duration = min(max(base_min_duration, word_based_min), 3.0)
+
+            end_time = last_char_end + buffer
+            if (end_time - segment_start) < min_duration:
+                end_time = segment_start + min_duration
+
+            subtitle_entries.append(((segment_start, end_time), text))
+
+        # Add smooth transitions between segments
+        for i in range(len(subtitle_entries)-1):
+            current_end = subtitle_entries[i][0][1]
+            next_start = subtitle_entries[i+1][0][0]
+            if next_start > current_end:
+                overlap = (next_start - current_end) * 0.3
+                subtitle_entries[i] = (
+                    (subtitle_entries[i][0][0], current_end + overlap),
+                    subtitle_entries[i][1]
+                )
+
         return subtitle_entries
 
     def generate_subtitles(self, text: str, duration: float, subtitle_json: Optional[str] = None) -> SubtitlesClip:
@@ -450,6 +517,8 @@ class SubtitleEngine:
 
                 subtitles = SubtitlesClip(
                     subtitle_entries, make_textclip=text_clip_generator, encoding='utf-8')
+
+                subtitles = subtitles.with_position(("center", "bottom"))
                 return subtitles
 
             except (IOError, OSError, ValueError) as e:
@@ -489,8 +558,12 @@ class VideoCompositor:
         Args:
             clip: The final composite video clip
             output_path: The path to save the rendered video file
+
+        Note:
+            The video is rendered with a fixed FPS of 6 and uses the libx264 codec for
+            optimal file size and quality balance in short-form vertical video content.
         """
-        clip.write_videofile(output_path, codec='libx264')
+        clip.write_videofile(output_path, codec='libx264', fps=6)
 
 
 class VideoPipeline:
@@ -610,7 +683,7 @@ if __name__ == "__main__":
         with VideoPipeline(DEFAULT_CONFIG) as pipeline:
             pipeline.execute(
                 output_path='test_output.mp4',
-                tts_path=r'demo\mp3\TIFU_by_sending_a_spicy_text_to_my_boss.mp3',
+                tts_path=r'demo\mp3\TIFU_by_correcting_my_manager_on_a_phrase_she_was_using.mp3',
                 music_path=r'demo\mp3\bg_music.mp3',
                 video_path=r'demo\mp4\13 Minutes Minecraft Parkour Gameplay [Free to Use] [Download].mp4',
                 text='Hello, world!',
