@@ -7,6 +7,7 @@ from types import TracebackType
 from typing import List, Tuple, Optional, Dict, Union, Type
 from moviepy import *
 from moviepy.video.tools.subtitles import SubtitlesClip
+from abc import ABC, abstractmethod
 
 logging.basicConfig(level=logging.INFO,
                     format='%(filename)s - %(lineno)d - %(asctime)s - %(levelname)s - %(message)s')
@@ -317,113 +318,64 @@ class VideoProcessor:
             raise IOError(f"Error processing video file: {str(e)}") from e
 
 
-class SubtitleEngine:
-    def __init__(self, config: Dict):
-        self.config = config
-        self._parse_config(config)
+class SubtitleParser(ABC):
+    """Abstract base class for subtitle parsers."""
 
-    def _parse_config(self, config: Dict) -> None:
-        self.font_path = config.get('font_path', 'Arial-Bold')
-        self.font_size = config.get('font_size', 70)
-        self.subtitle_color = config.get('subtitle_color', 'white')
-        self.stroke_color = config.get('stroke_color', 'black')
-        self.stroke_width = config.get('stroke_width', 2)
-        self.resolution = config.get('vertical_resolution', (1080, 1920))
-
-    def _detect_json_format(self, json_path: str) -> str:
-        """Detect the format of the JSON file (whisper or elevenlabs).
+    @abstractmethod
+    def parse(self, json_path: str) -> List[Tuple[Tuple[float, float], str]]:
+        """Parse subtitle data from a JSON file.
 
         Args:
-            json_path (str): Path to the JSON file
+            json_path: Path to the JSON file containing subtitle data
 
         Returns:
-            str: 'whisper' or 'elevenlabs'
-
-        Raises:
-            ValueError: If JSON format cannot be determined
+            List of tuples containing timing information and subtitle text
+            Each tuple is ((start_time, end_time), text)
         """
-        try:
-            with open(json_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+        pass
 
-            # Check for Whisper format
-            if 'segments' in data and isinstance(data['segments'], list):
-                if data['segments'] and all(key in data['segments'][0] for key in ['start', 'end', 'text']):
-                    return 'whisper'
 
-            # Check for ElevenLabs format
-            if isinstance(data, list) and data:
-                first_item = data[0]
-                if all(key in first_item for key in ['characters', 'character_start_times_seconds']):
-                    return 'elevenlabs'
+class WhisperSubtitleParser(SubtitleParser):
+    """Parser for Whisper-format JSON subtitle files."""
 
-            raise ValueError(
-                "Unknown JSON format - neither Whisper nor ElevenLabs format detected")
-
-        except Exception as e:
-            logging.error("Error detecting JSON format: %s", str(e))
-            raise
-
-    def _subdivide_whisper_segment(self, text: str, start_time: float, end_time: float, max_chars: int = 50) -> List[Tuple[Tuple[float, float], str]]:
-        """Subdivides a Whisper segment into smaller chunks based on text length and punctuation.
-
-        Args:
-            text (str): The text to subdivide
-            start_time (float): Start time of the segment
-            end_time (float): End time of the segment
-            max_chars (int): Maximum characters per subdivision
-
-        Returns:
-            List[Tuple[Tuple[float, float], str]]: List of timing tuples and text chunks
-        """
-        # Clean the text
+    def _subdivide_segment(self, text: str, start_time: float, end_time: float, max_chars: int = 50) -> List[Tuple[Tuple[float, float], str]]:
+        """Subdivides a Whisper segment into smaller chunks based on text length and punctuation."""
         text = text.strip()
         if not text:
             return []
 
-        # If text is short enough, return as is
         if len(text) <= max_chars:
             return [((start_time, end_time), text)]
 
         # Define punctuation hierarchy for splitting
-        # First tier: Strong breaks that always cause a split
         strong_breaks = {'.', '!', '?'}
-        # Second tier: Medium breaks that can cause splits if chunk is long enough
         medium_breaks = {';', ':', '—', '--'}
-        # Third tier: Weak breaks that only split if near max length
         weak_breaks = {',', ')', ']', '}', '"'}
 
         def find_best_split_point(text: str, max_length: int) -> int:
-            """Find the best point to split the text based on punctuation hierarchy."""
             if len(text) <= max_length:
                 return len(text)
 
-            # Look for strong breaks first
             for i in range(max_length, 0, -1):
                 if text[i-1] in strong_breaks:
                     return i
 
-            # Then look for medium breaks if chunk is at least 70% of max_length
             min_length_for_medium = int(max_length * 0.7)
             for i in range(max_length, min_length_for_medium, -1):
                 if text[i-1] in medium_breaks:
                     return i
 
-            # Then look for weak breaks if chunk is at least 80% of max_length
             min_length_for_weak = int(max_length * 0.8)
             for i in range(max_length, min_length_for_weak, -1):
                 if text[i-1] in weak_breaks:
                     return i
 
-            # If no punctuation found, look for the last space before max_length
             last_space = text[:max_length].rfind(' ')
             if last_space > 0:
                 return last_space
 
-            # If no space found, force split at max_length
             return max_length
 
-        # Split text into chunks using punctuation hierarchy
         chunks = []
         current_pos = 0
         text_length = len(text)
@@ -433,59 +385,41 @@ class SubtitleEngine:
             split_point = find_best_split_point(remaining_text, max_chars)
 
             chunk = remaining_text[:split_point].strip()
-            if chunk:  # Only add non-empty chunks
+            if chunk:
                 chunks.append(chunk)
             current_pos += split_point
 
-        # Calculate timing for each chunk
         num_chunks = len(chunks)
-        chunk_duration = total_duration = end_time - start_time
-
-        # Adjust timing based on punctuation and chunk length
+        total_duration = end_time - start_time
         result = []
         total_chars = sum(len(chunk) for chunk in chunks)
         current_time = start_time
 
         for i, chunk in enumerate(chunks):
-            # Calculate duration proportional to chunk length with punctuation weight
             chunk_weight = 1.0
             if chunk[-1] in strong_breaks:
-                chunk_weight = 1.2  # Give more time for strong breaks
+                chunk_weight = 1.2
             elif chunk[-1] in medium_breaks:
-                chunk_weight = 1.1  # Give slightly more time for medium breaks
+                chunk_weight = 1.1
 
-            # Calculate this chunk's duration
             char_ratio = len(chunk) / total_chars
-            this_duration = (chunk_duration * char_ratio) * chunk_weight
+            this_duration = (total_duration * char_ratio) * chunk_weight
 
-            # Ensure we don't exceed total duration
             if current_time + this_duration > end_time:
                 this_duration = end_time - current_time
 
             chunk_end = current_time + this_duration
 
-            # Add small gap between chunks, except for the last one
             if i < num_chunks - 1:
                 chunk_end -= 0.1
 
             result.append(((current_time, chunk_end), chunk))
-            current_time = chunk_end + 0.1  # Start next chunk after the gap
+            current_time = chunk_end + 0.1
 
         return result
 
-    def _process_whisper_json(self, json_path: str) -> List[Tuple[Tuple[float, float], str]]:
-        """Process Whisper JSON output to create subtitle entries.
-
-        Args:
-            json_path (str): Path to the Whisper JSON output file
-
-        Returns:
-            List[Tuple[Tuple[float, float], str]]: List of subtitle entries with timing and text
-
-        Raises:
-            FileNotFoundError: If JSON file doesn't exist
-            ValueError: If JSON format is invalid
-        """
+    def parse(self, json_path: str) -> List[Tuple[Tuple[float, float], str]]:
+        """Parse Whisper JSON output to create subtitle entries."""
         try:
             with open(json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -497,15 +431,12 @@ class SubtitleEngine:
             subtitle_entries = []
             for segment in data['segments']:
                 if all(key in segment for key in ['start', 'end', 'text']):
-                    # Get timing and text
                     start_time = segment['start']
                     end_time = segment['end']
                     text = segment['text'].strip()
 
-                    # Only process if there's actual text content
                     if text:
-                        # Subdivide long segments
-                        subdivided_entries = self._subdivide_whisper_segment(
+                        subdivided_entries = self._subdivide_segment(
                             text=text,
                             start_time=start_time,
                             end_time=end_time
@@ -526,29 +457,16 @@ class SubtitleEngine:
             logging.error("Error processing Whisper JSON: %s", str(e))
             raise
 
-    def _process_elevenlabs_json(self, json_path: str) -> List[Tuple[Tuple[float, float], str]]:
-        """Process ElevenLabs JSON output to create subtitle entries with character-level timing.
 
-        This method implements sophisticated subtitle timing logic:
-        1. Processes character-by-character timing data from the JSON input
-        2. Groups characters into natural segments based on:
-           - Punctuation marks (., !, ?, ,)
-           - Time gaps > 0.5s between characters
-           - Maximum segment length (40 chars)
-           - Natural pauses > 1.5s at spaces
-        3. Applies word count-based dynamic duration rules
+class ElevenLabsSubtitleParser(SubtitleParser):
+    """Parser for ElevenLabs-format JSON subtitle files."""
 
-        Args:
-            json_path (str): Path to the ElevenLabs JSON file
-
-        Returns:
-            List[Tuple[Tuple[float, float], str]]: List of subtitle entries
-        """
+    def parse(self, json_path: str) -> List[Tuple[Tuple[float, float], str]]:
+        """Parse ElevenLabs JSON output to create subtitle entries with character-level timing."""
         try:
             with open(json_path, 'r', encoding='utf-8') as f:
                 subtitle_data_list = json.load(f)
 
-            # Combine all segments into one continuous sequence
             all_characters = []
             all_start_times = []
 
@@ -574,9 +492,8 @@ class SubtitleEngine:
 
             for i, (char, start_time) in enumerate(char_timings):
                 current_text.append(char)
-                last_char_end = start_time + 0.1  # Per-character buffer
+                last_char_end = start_time + 0.1
 
-                # Segment break conditions
                 break_conditions = [
                     char in {'.', '!', '?', ','},
                     char == ' ' and (start_time - segment_start) > 1.5,
@@ -592,7 +509,6 @@ class SubtitleEngine:
 
                     word_count = len(text.split())
 
-                    # Dynamic timing based on word count
                     base_buffer = 0.8
                     word_based_buffer = 1 * word_count
                     buffer = min(max(base_buffer, word_based_buffer), 3.5)
@@ -608,17 +524,14 @@ class SubtitleEngine:
 
                     subtitle_entries.append(((segment_start, end_time), text))
 
-                    # Reset segment
                     current_text = []
                     if i < len(char_timings)-1:
                         segment_start = char_timings[i+1][1]
 
-            # Handle final segment if any
             if current_text:
                 text = ''.join(current_text).strip()
                 word_count = len(text.split())
 
-                # Final segment gets 20% longer duration
                 base_buffer = 0.2 * 1.2
                 word_based_buffer = 0.5 * word_count * 1.2
                 buffer = min(max(base_buffer, word_based_buffer), 3.0)
@@ -650,6 +563,85 @@ class SubtitleEngine:
             logging.error("Error processing ElevenLabs JSON: %s", str(e))
             raise
 
+
+class SubtitleParserFactory:
+    """Factory class for creating subtitle parsers based on JSON format."""
+
+    @staticmethod
+    def detect_format(json_path: str) -> str:
+        """Detect the format of the JSON file.
+
+        Args:
+            json_path: Path to the JSON file
+
+        Returns:
+            str: 'whisper' or 'elevenlabs'
+
+        Raises:
+            ValueError: If JSON format cannot be determined
+        """
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            if 'segments' in data and isinstance(data['segments'], list):
+                if data['segments'] and all(key in data['segments'][0] for key in ['start', 'end', 'text']):
+                    return 'whisper'
+
+            if isinstance(data, list) and data:
+                first_item = data[0]
+                if all(key in first_item for key in ['characters', 'character_start_times_seconds']):
+                    return 'elevenlabs'
+
+            raise ValueError(
+                "Unknown JSON format - neither Whisper nor ElevenLabs format detected")
+
+        except Exception as e:
+            logging.error("Error detecting JSON format: %s", str(e))
+            raise
+
+    @classmethod
+    def create_parser(cls, json_path: str) -> SubtitleParser:
+        """Create and return appropriate parser based on JSON format.
+
+        Args:
+            json_path: Path to the JSON file
+
+        Returns:
+            SubtitleParser: Instance of appropriate parser class
+
+        Raises:
+            ValueError: If JSON format cannot be determined
+        """
+        format_type = cls.detect_format(json_path)
+        if format_type == 'whisper':
+            return WhisperSubtitleParser()
+        elif format_type == 'elevenlabs':
+            return ElevenLabsSubtitleParser()
+        else:
+            raise ValueError(f"Unsupported subtitle format: {format_type}")
+
+
+class SubtitleEngine:
+    def __init__(self, config: Dict, parser_factory: Optional[Type[SubtitleParserFactory]] = None):
+        """Initialize the SubtitleEngine.
+
+        Args:
+            config: Configuration dictionary
+            parser_factory: Optional custom parser factory class. If None, uses default SubtitleParserFactory.
+        """
+        self.config = config
+        self._parse_config(config)
+        self.parser_factory = parser_factory or SubtitleParserFactory
+
+    def _parse_config(self, config: Dict) -> None:
+        self.font_path = config.get('font_path', 'Arial-Bold')
+        self.font_size = config.get('font_size', 70)
+        self.subtitle_color = config.get('subtitle_color', 'white')
+        self.stroke_color = config.get('stroke_color', 'black')
+        self.stroke_width = config.get('stroke_width', 2)
+        self.resolution = config.get('vertical_resolution', (1080, 1920))
+
     def _effect_subtitles(self, subtitles: SubtitlesClip) -> SubtitlesClip:
         # Add a fade in and fade out effect to the subtitles
         return subtitles.with_effects([vfx.CrossFadeIn(0.1), vfx.CrossFadeOut(0.1)])
@@ -657,29 +649,6 @@ class SubtitleEngine:
     def generate_subtitles(self, text: str, duration: float, subtitle_json: Optional[str] = None) -> SubtitlesClip:
         """
         Generates a SubtitlesClip for the video using the provided text and timing information.
-
-        Supports two JSON formats:
-        1. Whisper format with segment-level timing:
-           {
-               "text": "Full transcription text",
-               "segments": [
-                   {
-                       "start": 0.0,
-                       "end": 6.0,
-                       "text": "Segment text"
-                   },
-                   ...
-               ]
-           }
-
-        2. ElevenLabs format with character-level timing:
-           [
-               {
-                   "characters": ["T", "h", "i", "s", ...],
-                   "character_start_times_seconds": [0.0, 0.081, ...]
-               },
-               ...
-           ]
 
         Args:
             text: The complete subtitle text.
@@ -704,16 +673,9 @@ class SubtitleEngine:
 
         if subtitle_json is not None:
             try:
-                # Detect JSON format and process accordingly
-                json_format = self._detect_json_format(subtitle_json)
-                logging.info("Detected JSON format: %s", json_format)
-
-                if json_format == 'whisper':
-                    subtitle_entries = self._process_whisper_json(
-                        subtitle_json)
-                else:  # elevenlabs
-                    subtitle_entries = self._process_elevenlabs_json(
-                        subtitle_json)
+                # Use the parser factory to get the appropriate parser
+                parser = self.parser_factory.create_parser(subtitle_json)
+                subtitle_entries = parser.parse(subtitle_json)
 
                 subtitles = SubtitlesClip(
                     subtitle_entries,
