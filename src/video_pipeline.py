@@ -328,12 +328,88 @@ class SubtitleEngine:
         self.stroke_width = config.get('stroke_width', 2)
         self.resolution = config.get('vertical_resolution', (1080, 1920))
 
-    def _effect_subtitles(self, subtitles: SubtitlesClip) -> SubtitlesClip:
-        # Add a fade in and fade out effect to the subtitles
-        return subtitles.with_effects([vfx.CrossFadeIn(0.1), vfx.CrossFadeOut(0.1)])
+    def _detect_json_format(self, json_path: str) -> str:
+        """Detect the format of the JSON file (whisper or elevenlabs).
 
-    def _create_srt_file_from_json(self, subtitle_data: Dict) -> List[Tuple[Tuple[float, float], str]]:
-        """Converts JSON timing data into character-accurate subtitle entries with dynamic timing.
+        Args:
+            json_path (str): Path to the JSON file
+
+        Returns:
+            str: 'whisper' or 'elevenlabs'
+
+        Raises:
+            ValueError: If JSON format cannot be determined
+        """
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Check for Whisper format
+            if 'segments' in data and isinstance(data['segments'], list):
+                if data['segments'] and all(key in data['segments'][0] for key in ['start', 'end', 'text']):
+                    return 'whisper'
+
+            # Check for ElevenLabs format
+            if isinstance(data, list) and data:
+                first_item = data[0]
+                if all(key in first_item for key in ['characters', 'character_start_times_seconds']):
+                    return 'elevenlabs'
+
+            raise ValueError(
+                "Unknown JSON format - neither Whisper nor ElevenLabs format detected")
+
+        except Exception as e:
+            logging.error("Error detecting JSON format: %s", str(e))
+            raise
+
+    def _process_whisper_json(self, json_path: str) -> List[Tuple[Tuple[float, float], str]]:
+        """Process Whisper JSON output to create subtitle entries.
+
+        Args:
+            json_path (str): Path to the Whisper JSON output file
+
+        Returns:
+            List[Tuple[Tuple[float, float], str]]: List of subtitle entries with timing and text
+
+        Raises:
+            FileNotFoundError: If JSON file doesn't exist
+            ValueError: If JSON format is invalid
+        """
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            if 'segments' not in data:
+                raise ValueError(
+                    "Invalid Whisper JSON format: missing 'segments' key")
+
+            subtitle_entries = []
+            for segment in data['segments']:
+                if all(key in segment for key in ['start', 'end', 'text']):
+                    # Create timing tuple and clean text
+                    timing = (segment['start'], segment['end'])
+                    text = segment['text'].strip()
+
+                    # Only add if there's actual text content
+                    if text:
+                        subtitle_entries.append((timing, text))
+                else:
+                    logging.warning("Skipping invalid segment in Whisper JSON")
+
+            return subtitle_entries
+
+        except FileNotFoundError:
+            logging.error("Whisper JSON file not found: %s", json_path)
+            raise
+        except json.JSONDecodeError as e:
+            logging.error("Invalid JSON format in %s: %s", json_path, str(e))
+            raise ValueError(f"Invalid JSON format: {str(e)}")
+        except Exception as e:
+            logging.error("Error processing Whisper JSON: %s", str(e))
+            raise
+
+    def _process_elevenlabs_json(self, json_path: str) -> List[Tuple[Tuple[float, float], str]]:
+        """Process ElevenLabs JSON output to create subtitle entries with character-level timing.
 
         This method implements sophisticated subtitle timing logic:
         1. Processes character-by-character timing data from the JSON input
@@ -342,73 +418,96 @@ class SubtitleEngine:
            - Time gaps > 0.5s between characters
            - Maximum segment length (40 chars)
            - Natural pauses > 1.5s at spaces
-        3. Applies word count-based dynamic duration rules:
-           - Base buffer time: 0.2s
-           - Word-based buffer: 0.5s per word (capped at 2.5s)
-           - Base minimum duration: 0.2s
-           - Word-based minimum duration: 0.5s per word (capped at 2.5s)
-        4. Special handling for final segment:
-           - 20% longer duration than normal segments
-           - Base buffer and minimum times increased by 1.2x
-           - Maximum buffer time capped at 3.0s
-        5. Per-character timing:
-           - Each character gets a 0.1s buffer
-           - Ensures smooth text display
+        3. Applies word count-based dynamic duration rules
 
         Args:
-            subtitle_data: Dictionary containing:
-                - 'characters': List of individual characters
-                - 'character_start_times_seconds': List of start times for each character
+            json_path (str): Path to the ElevenLabs JSON file
 
         Returns:
-            List[Tuple[Tuple[float, float], str]]: List of subtitle entries, each containing:
-                - Timing tuple (start_time, end_time) in seconds
-                - Subtitle text for that time period
-
-        Raises:
-            ValueError: If the JSON format is invalid or there's a mismatch between characters and timings
-            KeyError: If required fields are missing from subtitle_data
+            List[Tuple[Tuple[float, float], str]]: List of subtitle entries
         """
-        char_timings = list(zip(
-            subtitle_data['characters'],
-            subtitle_data['character_start_times_seconds']
-        ))
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                subtitle_data_list = json.load(f)
 
-        subtitle_entries = []
-        current_text = []
-        segment_start = char_timings[0][1]
-        last_char_end = segment_start
-        max_segment_chars = 60
+            # Combine all segments into one continuous sequence
+            all_characters = []
+            all_start_times = []
 
-        for i, (char, start_time) in enumerate(char_timings):
-            current_text.append(char)
-            last_char_end = start_time + 0.1  # Per-character buffer
+            for segment in subtitle_data_list:
+                if not all(key in segment for key in ['characters', 'character_start_times_seconds']):
+                    raise ValueError("Invalid ElevenLabs JSON format")
 
-            # Segment break conditions
-            break_conditions = [
-                char in {'.', '!', '?', ','},
-                char == ' ' and (start_time - segment_start) > 1.5,
-                len(current_text) >= max_segment_chars,
-                i < len(char_timings)-1 and
-                char_timings[i+1][1] - start_time > 0.5
-            ]
+                if len(segment['characters']) != len(segment['character_start_times_seconds']):
+                    raise ValueError(
+                        "Mismatch between characters and start times")
 
-            if any(break_conditions):
+                all_characters.extend(segment['characters'])
+                all_start_times.extend(
+                    segment['character_start_times_seconds'])
+
+            char_timings = list(zip(all_characters, all_start_times))
+
+            subtitle_entries = []
+            current_text = []
+            segment_start = char_timings[0][1]
+            last_char_end = segment_start
+            max_segment_chars = 60
+
+            for i, (char, start_time) in enumerate(char_timings):
+                current_text.append(char)
+                last_char_end = start_time + 0.1  # Per-character buffer
+
+                # Segment break conditions
+                break_conditions = [
+                    char in {'.', '!', '?', ','},
+                    char == ' ' and (start_time - segment_start) > 1.5,
+                    len(current_text) >= max_segment_chars,
+                    i < len(char_timings) -
+                    1 and char_timings[i+1][1] - start_time > 0.5
+                ]
+
+                if any(break_conditions):
+                    text = ''.join(current_text).strip()
+                    if len(current_text) >= max_segment_chars:
+                        text += '...'
+
+                    word_count = len(text.split())
+
+                    # Dynamic timing based on word count
+                    base_buffer = 0.8
+                    word_based_buffer = 1 * word_count
+                    buffer = min(max(base_buffer, word_based_buffer), 3.5)
+
+                    base_min_duration = 0.8
+                    word_based_min = 1 * word_count
+                    min_duration = min(
+                        max(base_min_duration, word_based_min), 3.5)
+
+                    end_time = last_char_end + buffer
+                    if (end_time - segment_start) < min_duration:
+                        end_time = segment_start + min_duration
+
+                    subtitle_entries.append(((segment_start, end_time), text))
+
+                    # Reset segment
+                    current_text = []
+                    if i < len(char_timings)-1:
+                        segment_start = char_timings[i+1][1]
+
+            # Handle final segment if any
+            if current_text:
                 text = ''.join(current_text).strip()
-                # Add ellipsis if the text is too long
-                if len(current_text) >= max_segment_chars:
-                    text += '...'
-
                 word_count = len(text.split())
 
-                # Dynamic timing based on word count
-                base_buffer = 0.8
-                word_based_buffer = 1 * word_count
-                buffer = min(max(base_buffer, word_based_buffer), 3.5)
+                # Final segment gets 20% longer duration
+                base_buffer = 0.2 * 1.2
+                word_based_buffer = 0.5 * word_count * 1.2
+                buffer = min(max(base_buffer, word_based_buffer), 3.0)
 
-                base_min_duration = 0.8
-                word_based_min = 1 * word_count
-                min_duration = min(max(base_min_duration, word_based_min), 3.5)
+                base_min_duration = 0.2 * 1.2
+                word_based_min = 0.5 * word_count * 1.2
+                min_duration = min(max(base_min_duration, word_based_min), 3.0)
 
                 end_time = last_char_end + buffer
                 if (end_time - segment_start) < min_duration:
@@ -416,68 +515,58 @@ class SubtitleEngine:
 
                 subtitle_entries.append(((segment_start, end_time), text))
 
-                # Reset segment
-                current_text = []
-                if i < len(char_timings)-1:
-                    segment_start = char_timings[i+1][1]
+            # Add smooth transitions between segments
+            for i in range(len(subtitle_entries)-1):
+                current_end = subtitle_entries[i][0][1]
+                next_start = subtitle_entries[i+1][0][0]
+                if next_start > current_end:
+                    overlap = (next_start - current_end) * 0.3
+                    subtitle_entries[i] = (
+                        (subtitle_entries[i][0][0], current_end + overlap),
+                        subtitle_entries[i][1]
+                    )
 
-        # Handle final segment
-        if current_text:
-            text = ''.join(current_text).strip()
-            word_count = len(text.split())
+            return subtitle_entries
 
-            # Final segment gets 20% longer duration
-            base_buffer = 0.2 * 1.2
-            word_based_buffer = 0.5 * word_count * 1.2
-            buffer = min(max(base_buffer, word_based_buffer), 3.0)
+        except Exception as e:
+            logging.error("Error processing ElevenLabs JSON: %s", str(e))
+            raise
 
-            base_min_duration = 0.2 * 1.2
-            word_based_min = 0.5 * word_count * 1.2
-            min_duration = min(max(base_min_duration, word_based_min), 3.0)
-
-            end_time = last_char_end + buffer
-            if (end_time - segment_start) < min_duration:
-                end_time = segment_start + min_duration
-
-            subtitle_entries.append(((segment_start, end_time), text))
-
-        # Add smooth transitions between segments
-        for i in range(len(subtitle_entries)-1):
-            current_end = subtitle_entries[i][0][1]
-            next_start = subtitle_entries[i+1][0][0]
-            if next_start > current_end:
-                overlap = (next_start - current_end) * 0.3
-                subtitle_entries[i] = (
-                    (subtitle_entries[i][0][0], current_end + overlap),
-                    subtitle_entries[i][1]
-                )
-
-        return subtitle_entries
+    def _effect_subtitles(self, subtitles: SubtitlesClip) -> SubtitlesClip:
+        # Add a fade in and fade out effect to the subtitles
+        return subtitles.with_effects([vfx.CrossFadeIn(0.1), vfx.CrossFadeOut(0.1)])
 
     def generate_subtitles(self, text: str, duration: float, subtitle_json: Optional[str] = None) -> SubtitlesClip:
         """
         Generates a SubtitlesClip for the video using the provided text and timing information.
 
-        If a subtitle JSON file is provided, it is expected to contain data in the following format:
-        [
-            {
-                "characters": ["T", "h", "i", "s", " ", "i", "s", ...],
-                "character_start_times_seconds": [0.0, 0.081, 0.151, ...]
-            }
-            ...
-        ]
+        Supports two JSON formats:
+        1. Whisper format with segment-level timing:
+           {
+               "text": "Full transcription text",
+               "segments": [
+                   {
+                       "start": 0.0,
+                       "end": 6.0,
+                       "text": "Segment text"
+                   },
+                   ...
+               ]
+           }
 
-        The subtitle is built as a progressive(cumulative) text reveal based on character timings.
-        For each character, the text is updated from the beginning up to that character.
-        The end time for each segment is set to the next character's start time, and for the final
-        character it is set to the total duration of the audio.
-
-        If subtitle_json is not provided or fails to load, the entire text is rendered across the entire duration.
+        2. ElevenLabs format with character-level timing:
+           [
+               {
+                   "characters": ["T", "h", "i", "s", ...],
+                   "character_start_times_seconds": [0.0, 0.081, ...]
+               },
+               ...
+           ]
 
         Args:
             text: The complete subtitle text.
             duration: Total duration of the audio/video.
-            subtitle_json: Optional path to a JSON file with character timing information.
+            subtitle_json: Optional path to a JSON file with timing information.
 
         Returns:
             SubtitlesClip: A moviepy SubtitlesClip generated based on the timing data.
@@ -496,44 +585,31 @@ class SubtitleEngine:
 
         if subtitle_json is not None:
             try:
-                with open(subtitle_json, 'r', encoding='utf-8') as f:
-                    subtitle_data_list = json.load(f)
+                # Detect JSON format and process accordingly
+                json_format = self._detect_json_format(subtitle_json)
+                logging.info("Detected JSON format: %s", json_format)
 
-                # Combine all segments into one continuous sequence
-                all_characters = []
-                all_start_times = []
-
-                for segment in subtitle_data_list:
-                    if not all(key in segment for key in ['characters', 'character_start_times_seconds']):
-                        raise ValueError("Invalid subtitle JSON format")
-
-                    if len(segment['characters']) != len(segment['character_start_times_seconds']):
-                        raise ValueError(
-                            "Mismatch between characters and start times")
-
-                    all_characters.extend(segment['characters'])
-                    all_start_times.extend(
-                        segment['character_start_times_seconds'])
-
-                subtitle_data = {
-                    'characters': all_characters,
-                    'character_start_times_seconds': all_start_times
-                }
-
-                subtitle_entries = self._create_srt_file_from_json(
-                    subtitle_data)
+                if json_format == 'whisper':
+                    subtitle_entries = self._process_whisper_json(
+                        subtitle_json)
+                else:  # elevenlabs
+                    subtitle_entries = self._process_elevenlabs_json(
+                        subtitle_json)
 
                 subtitles = SubtitlesClip(
-                    subtitle_entries, make_textclip=text_clip_generator, encoding='utf-8')
+                    subtitle_entries,
+                    make_textclip=text_clip_generator
+                )
 
                 subtitles = subtitles.with_position(
                     ("center", 0.85), relative=True)
 
-                return subtitles
+                return self._effect_subtitles(subtitles)
 
-            except (IOError, OSError, ValueError) as e:
-                logging.error("Error generating subtitles: %s", str(e))
-                raise e
+            except Exception as e:
+                logging.error(
+                    "Error generating subtitles from JSON: %s", str(e))
+                raise
         else:
             return SubtitlesClip([], make_textclip=text_clip_generator, encoding='utf-8')
 
@@ -697,7 +773,7 @@ if __name__ == "__main__":
                 music_path=r'demo\mp3\bg_music.mp3',
                 video_path=r'demo\mp4\13 Minutes Minecraft Parkour Gameplay [Free to Use] [Download].mp4',
                 text='Hello, world!',
-                subtitle_json=r'demo\json\26d5d1bb-c2b2-419d-98dd-bdf5334e5a23.json'
+                subtitle_json=r'demo\json\TIFU_by_correcting_my_manager_on_a_phrase_she_was_using.json'
             )
     except Exception as e:
         logging.error(f"An error occurred: {e}")
