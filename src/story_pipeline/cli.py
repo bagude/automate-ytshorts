@@ -7,6 +7,7 @@ from datetime import datetime
 
 from .db_manager import DatabaseManager, Story
 from .story_pipeline import StoryPipeline
+from ..video_pipeline.video_manager import VideoManager
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -195,6 +196,48 @@ def cleanup():
             click.echo(f"Deleted failed story {story.id}")
 
         click.echo(f"\nDeleted {len(error_stories)} failed stories")
+
+
+@cli.command()
+@click.option('--story-id', help="Create video for a specific story")
+@click.option('--all', 'process_all', is_flag=True, help="Process all ready stories")
+def create_video(story_id: Optional[str], process_all: bool):
+    """Create videos for stories that are ready."""
+    if not story_id and not process_all:
+        click.echo("Please specify either --story-id or --all")
+        return
+
+    with get_db() as db:
+        video_manager = VideoManager(db)
+
+        if process_all:
+            click.echo("Processing all ready stories...")
+            video_manager.process_ready_stories()
+        else:
+            story = db.get_story(story_id)
+            if not story:
+                click.echo(f"Story {story_id} not found.")
+                return
+
+            try:
+                video_manager.create_video_for_story(story)
+                click.echo(f"Successfully created video for story {story_id}")
+            except Exception as e:
+                click.echo(f"Failed to create video: {str(e)}")
+
+
+@cli.command()
+@click.argument('story_id')
+def retry_video(story_id: str):
+    """Retry video creation for a failed story."""
+    with get_db() as db:
+        video_manager = VideoManager(db)
+        try:
+            video_manager.retry_failed_video(story_id)
+            click.echo(
+                f"Successfully retried video creation for story {story_id}")
+        except Exception as e:
+            click.echo(f"Failed to retry video creation: {str(e)}")
 
 
 if __name__ == '__main__':
