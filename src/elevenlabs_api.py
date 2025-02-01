@@ -6,7 +6,7 @@ import base64
 import logging
 
 import requests
-from src.load_env import load_env
+from load_env import load_env
 
 
 logging.basicConfig(level=logging.INFO,
@@ -271,7 +271,7 @@ def main():
     Loads environment variables and processes a CSV file with default settings.
     """
     api_key = load_env("eleven-labs")[0]
-    voice_id = "kPzsL2i3teMYv0FxEYQ6"
+    voice_id = "YFpUSo240svj7tcmDapZ"
     input_csv = "tifu_posts_try_one.csv"
     output_csv = "tifu_posts_output.csv"
     mode = "timestamps"

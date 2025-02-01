@@ -1,4 +1,5 @@
 import os
+import math
 import json
 import logging
 import sys
@@ -696,7 +697,8 @@ class SubtitleEngine:
                 stroke_color=self.stroke_color,
                 stroke_width=self.stroke_width,
                 method="caption",
-                size=(self.resolution[0], None)
+                size=(self.resolution[0], None),
+                text_align="center"
             )
 
         if subtitle_json is not None:
@@ -718,7 +720,7 @@ class SubtitleEngine:
                 )
 
                 subtitles = subtitles.with_position(
-                    ("center", 0.85), relative=True)
+                    ("center", 0.70), relative=True)
 
                 return self._effect_subtitles(subtitles)
 
@@ -737,6 +739,17 @@ class VideoCompositor:
 
     def _parse_config(self, config: Dict) -> None:
         self.output_path = config.get('output_path', 'output.mp4')
+        self.panic_mode = config.get('panic_mode', False)
+
+    def _apply_panic_effects(self, clip: VideoFileClip) -> VideoFileClip:
+        """Applies a series of attention-grabbing effects to the video when in panic mode."""
+
+        clip = clip.with_effects([
+            vfx.AccelDecel(new_duration=clip.duration * 2,
+                           abruptness=0.5, soonness=0.5)
+        ])
+
+        return clip
 
     def compose(self, video_clip: VideoFileClip, subtitles_clip: SubtitlesClip, audio_clip: AudioFileClip) -> VideoFileClip:
         """Combines video, subtitles, and audio into a single composite clip.
@@ -748,10 +761,17 @@ class VideoCompositor:
 
         Returns:
             VideoFileClip: The final composite video with all elements combined
-
         """
+        # Apply audio
         video_clip = video_clip.with_audio(audio_clip)
 
+        # Apply panic mode effects if enabled
+        if self.panic_mode:
+            logging.info(
+                "🚨 PANIC MODE ACTIVATED! Applying chaotic video effects 🚨")
+            video_clip = self._apply_panic_effects(video_clip)
+
+        # Combine with subtitles
         return CompositeVideoClip([video_clip, subtitles_clip])
 
     def render(self, clip: VideoFileClip, output_path: str) -> None:
@@ -765,7 +785,7 @@ class VideoCompositor:
             The video is rendered with a fixed FPS of 6 and uses the libx264 codec for
             optimal file size and quality balance in short-form vertical video content.
         """
-        clip.write_videofile(output_path, codec='libx264', fps=6)
+        clip.write_videofile(output_path, codec='libx264', fps=30)
 
 
 class VideoPipeline:
@@ -877,7 +897,8 @@ DEFAULT_CONFIG = {
     'subtitle_position': ('center', 0.85),
     'music_volume': 0.3,
     'tts_volume': 1.2,
-    'audio_master_duration_sec': 60
+    'audio_master_duration_sec': 60,
+    'panic_mode': False
 }
 
 if __name__ == "__main__":
