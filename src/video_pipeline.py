@@ -3,7 +3,8 @@ import math
 import json
 import logging
 import sys
-from typing import List, Tuple, Optional, Dict
+from types import TracebackType
+from typing import List, Tuple, Optional, Dict, Union, Type
 from moviepy import *
 from moviepy.video.tools.subtitles import SubtitlesClip
 
@@ -774,18 +775,19 @@ class VideoCompositor:
         # Combine with subtitles
         return CompositeVideoClip([video_clip, subtitles_clip])
 
-    def render(self, clip: VideoFileClip, output_path: str) -> None:
+    def render(self, clip: VideoFileClip, output_path: str, fps: int = 30) -> None:
         """Renders the final composite video to a file.
 
         Args:
             clip: The final composite video clip
             output_path: The path to save the rendered video file
+            fps: The frame rate of the output video (default: 30)
 
         Note:
-            The video is rendered with a fixed FPS of 6 and uses the libx264 codec for
-            optimal file size and quality balance in short-form vertical video content.
+            The video is rendered using the libx264 codec for optimal file size
+            and quality balance in short-form vertical video content.
         """
-        clip.write_videofile(output_path, codec='libx264', fps=30)
+        clip.write_videofile(output_path, codec='libx264', fps=fps)
 
 
 class VideoPipeline:
@@ -799,25 +801,98 @@ class VideoPipeline:
             'subtitle_engine': SubtitleEngine(config),
             'compositor': VideoCompositor(config)
         }
-        self.active_clips = []
+        self._active_clips: Dict[str, Union[VideoFileClip,
+                                            AudioFileClip, SubtitlesClip]] = {}
+        self._cleanup_status = {'initialized': False, 'cleaned': False}
         logging.info("VideoPipeline initialized successfully")
 
-    def __enter__(self):
+    def __enter__(self) -> 'VideoPipeline':
+        """Enter the context manager.
+
+        Sets up the pipeline and marks it as initialized for proper cleanup tracking.
+
+        Returns:
+            VideoPipeline: The pipeline instance
+        """
         logging.info("Entering VideoPipeline context")
+        self._cleanup_status['initialized'] = True
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        logging.info("Exiting VideoPipeline context")
-        self._cleanup()
+    def __exit__(self, exc_type: Optional[Type[BaseException]],
+                 exc_val: Optional[BaseException],
+                 exc_tb: Optional[TracebackType]) -> None:
+        """Exit the context manager and ensure proper cleanup.
 
-    def _cleanup(self):
-        logging.info("Starting cleanup of active clips")
-        for clip in self.active_clips:
+        Args:
+            exc_type: The type of the exception that occurred, if any
+            exc_val: The instance of the exception that occurred, if any
+            exc_tb: The traceback of the exception that occurred, if any
+        """
+        logging.info("Exiting VideoPipeline context")
+        try:
+            self._cleanup()
+        except Exception as e:
+            logging.error("Error during cleanup in context exit: %s", str(e))
+            # If we had an original exception, preserve it
+            if exc_type is not None:
+                raise exc_val
+            # Otherwise, raise the cleanup error
+            raise
+        finally:
+            # Mark as cleaned even if there were errors
+            self._cleanup_status['cleaned'] = True
+
+        # Log any exception that occurred during pipeline execution
+        if exc_type is not None:
+            logging.error("Pipeline execution failed with %s: %s",
+                          exc_type.__name__, str(exc_val))
+
+    def _register_clip(self, clip_id: str, clip: Union[VideoFileClip, AudioFileClip, SubtitlesClip]) -> None:
+        """Register a clip for cleanup tracking.
+
+        Args:
+            clip_id: Unique identifier for the clip
+            clip: The clip to register
+        """
+        self._active_clips[clip_id] = clip
+        logging.debug("Registered clip: %s", clip_id)
+
+    def _cleanup(self) -> None:
+        """Clean up all active media clips and resources.
+
+        This method ensures proper closure of all video, audio, and subtitle clips
+        that were created during pipeline execution.
+        """
+        if not self._cleanup_status['initialized']:
+            logging.warning("Cleanup called before pipeline initialization")
+            return
+
+        if self._cleanup_status['cleaned']:
+            logging.info("Cleanup already performed")
+            return
+
+        logging.info("Starting cleanup of %d active clips",
+                     len(self._active_clips))
+
+        cleanup_errors = []
+        for clip_id, clip in self._active_clips.items():
             try:
-                clip.close()
+                if clip is not None:
+                    clip.close()
+                    logging.debug("Successfully closed clip: %s", clip_id)
             except Exception as e:
-                logging.warning("Failed to close clip: %s", str(e))
-        logging.info("Cleanup completed")
+                error_msg = f"Failed to close clip {clip_id}: {str(e)}"
+                cleanup_errors.append(error_msg)
+                logging.error(error_msg)
+
+        # Clear the clips dictionary
+        self._active_clips.clear()
+
+        if cleanup_errors:
+            raise RuntimeError(
+                f"Cleanup completed with {len(cleanup_errors)} errors: {'; '.join(cleanup_errors)}")
+
+        logging.info("Cleanup completed successfully")
 
     def execute(
             self,
@@ -826,13 +901,13 @@ class VideoPipeline:
             music_path: str,
             video_path: str,
             text: str,
-            subtitle_json: Optional[str] = None
+            subtitle_json: Optional[str] = None,
+            fps: int = 30
     ) -> None:
-
         try:
             logging.info("Starting video pipeline execution")
             logging.info(
-                f"Processing video with: output={output_path}, tts={tts_path}, music={music_path}, video={video_path}")
+                f"Processing video with: output={output_path}, tts={tts_path}, music={music_path}, video={video_path}, fps={fps}")
 
             # 1. Input validation
             logging.info("Step 1/6: Validating input files and paths")
@@ -849,7 +924,7 @@ class VideoPipeline:
                 "Step 2/6: Processing audio files (TTS and background music)")
             audio_clip = self.components['audio_processor'].process_audio(
                 tts_path, music_path)
-            self.active_clips.append(audio_clip)
+            self._register_clip('audio', audio_clip)
             logging.info(
                 f"Audio processing completed. Duration: {audio_clip.duration:.2f} seconds")
 
@@ -857,7 +932,7 @@ class VideoPipeline:
             logging.info("Step 3/6: Processing video file")
             video_clip = self.components['video_processor'].process_video(
                 video_path, audio_clip.duration)
-            self.active_clips.append(video_clip)
+            self._register_clip('video', video_clip)
             logging.info(
                 f"Video processing completed. Size: {video_clip.size}")
 
@@ -865,24 +940,20 @@ class VideoPipeline:
             logging.info("Step 4/6: Generating subtitles")
             subtitles_clip = self.components['subtitle_engine'].generate_subtitles(
                 text, audio_clip.duration, subtitle_json)
-            self.active_clips.append(subtitles_clip)
+            self._register_clip('subtitles', subtitles_clip)
             logging.info("Subtitle generation completed")
 
             # 5. Composition
             logging.info("Step 5/6: Compositing video, audio, and subtitles")
             final = self.components['compositor'].compose(
                 video_clip, subtitles_clip, audio_clip)
+            self._register_clip('final', final)
             logging.info("Starting video rendering")
-            self.components['compositor'].render(final, output_path)
-            self.active_clips.append(final)
+            self.components['compositor'].render(final, output_path, fps=fps)
             logging.info("Video rendering completed")
 
-            # 6. Cleanup
-            logging.info("Step 6/6: Performing final cleanup")
-            self._cleanup()
-
             logging.info("✨ Successfully created video: %s", output_path)
-        except (IOError, OSError, ValueError, FileNotFoundError, PermissionError, AttributeError) as e:
+        except Exception as e:
             logging.error("❌ Pipeline execution failed: %s", str(e))
             raise
 
@@ -910,7 +981,8 @@ if __name__ == "__main__":
                 music_path=r'demo\mp3\bg_music.mp3',
                 video_path=r'demo\mp4\13 Minutes Minecraft Parkour Gameplay [Free to Use] [Download].mp4',
                 text='Hello, world!',
-                subtitle_json=r'demo\json\TIFU_by_correcting_my_manager_on_a_phrase_she_was_using.json'
+                subtitle_json=r'demo\json\TIFU_by_correcting_my_manager_on_a_phrase_she_was_using.json',
+                fps=2  # Example FPS setting
             )
     except Exception as e:
         logging.error(f"An error occurred: {e}")
