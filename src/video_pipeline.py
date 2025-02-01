@@ -376,7 +376,7 @@ class SubtitleEngine:
 
             subtitle_entries.append(((start_time, end_time), current_text))
 
-        logging.info("Subtitle entries: %s", subtitle_entries)
+        # logging.info("Subtitle entries: %s", subtitle_entries)
         return subtitle_entries
 
     def generate_subtitles(self, text: str, duration: float, subtitle_json: Optional[str] = None) -> SubtitlesClip:
@@ -460,34 +460,69 @@ class SubtitleEngine:
 
 
 class VideoCompositor:
-    def compose(self, *args):
-        pass
+    def __init__(self, config: Dict):
+        self.config = config
+        self._parse_config(config)
+
+    def _parse_config(self, config: Dict) -> None:
+        self.output_path = config.get('output_path', 'output.mp4')
+
+    def compose(self, video_clip: VideoFileClip, subtitles_clip: SubtitlesClip, audio_clip: AudioFileClip) -> VideoFileClip:
+        """Combines video, subtitles, and audio into a single composite clip.
+
+        Args:
+            video_clip: The base video clip
+            subtitles_clip: The subtitle overlay clip
+            audio_clip: The audio track clip
+
+        Returns:
+            VideoFileClip: The final composite video with all elements combined
+
+        """
+        video_clip = video_clip.with_audio(audio_clip)
+
+        return CompositeVideoClip([video_clip, subtitles_clip])
+
+    def render(self, clip: VideoFileClip, output_path: str) -> None:
+        """Renders the final composite video to a file.
+
+        Args:
+            clip: The final composite video clip
+            output_path: The path to save the rendered video file
+        """
+        clip.write_videofile(output_path, codec='libx264')
 
 
 class VideoPipeline:
     def __init__(self, config: Dict):
+        logging.info("Initializing VideoPipeline with configuration")
         self.config = config
         self.components = {
             'validator': InputValidator(),
             'audio_processor': AudioProcessor(config),
             'video_processor': VideoProcessor(config),
             'subtitle_engine': SubtitleEngine(config),
-            # 'compositor': VideoCompositor(config)
+            'compositor': VideoCompositor(config)
         }
         self.active_clips = []
+        logging.info("VideoPipeline initialized successfully")
 
     def __enter__(self):
+        logging.info("Entering VideoPipeline context")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        logging.info("Exiting VideoPipeline context")
         self._cleanup()
 
     def _cleanup(self):
+        logging.info("Starting cleanup of active clips")
         for clip in self.active_clips:
             try:
                 clip.close()
             except Exception as e:
                 logging.warning("Failed to close clip: %s", str(e))
+        logging.info("Cleanup completed")
 
     def execute(
             self,
@@ -500,40 +535,61 @@ class VideoPipeline:
     ) -> None:
 
         try:
+            logging.info("Starting video pipeline execution")
+            logging.info(
+                f"Processing video with: output={output_path}, tts={tts_path}, music={music_path}, video={video_path}")
+
             # 1. Input validation
+            logging.info("Step 1/6: Validating input files and paths")
             self.components['validator'].validate_inputs(
                 output_path,
                 tts_path,
                 music_path,
                 video_path
             )
+            logging.info("Input validation completed successfully")
 
             # 2. Audio processing
+            logging.info(
+                "Step 2/6: Processing audio files (TTS and background music)")
             audio_clip = self.components['audio_processor'].process_audio(
                 tts_path, music_path)
             self.active_clips.append(audio_clip)
+            logging.info(
+                f"Audio processing completed. Duration: {audio_clip.duration:.2f} seconds")
 
             # 3. Video processing
+            logging.info("Step 3/6: Processing video file")
             video_clip = self.components['video_processor'].process_video(
                 video_path, audio_clip.duration)
             self.active_clips.append(video_clip)
+            logging.info(
+                f"Video processing completed. Size: {video_clip.size}")
 
             # 4. Subtitle generation
+            logging.info("Step 4/6: Generating subtitles")
             subtitles_clip = self.components['subtitle_engine'].generate_subtitles(
                 text, audio_clip.duration, subtitle_json)
             self.active_clips.append(subtitles_clip)
-
-            sys.exit(0)
+            logging.info("Subtitle generation completed")
 
             # 5. Composition
+            logging.info("Step 5/6: Compositing video, audio, and subtitles")
             final = self.components['compositor'].compose(
                 video_clip, subtitles_clip, audio_clip)
+            logging.info("Starting video rendering")
             self.components['compositor'].render(final, output_path)
+            self.active_clips.append(final)
+            logging.info("Video rendering completed")
 
-            logging.info("Successfully created video: %s", output_path)
+            # 6. Cleanup
+            logging.info("Step 6/6: Performing final cleanup")
+            self._cleanup()
+
+            logging.info("✨ Successfully created video: %s", output_path)
         except (IOError, OSError, ValueError, FileNotFoundError, PermissionError, AttributeError) as e:
-            logging.error("An error occurred: %s", str(e))
-            sys.exit(1)
+            logging.error("❌ Pipeline execution failed: %s", str(e))
+            raise
 
 
 DEFAULT_CONFIG = {
