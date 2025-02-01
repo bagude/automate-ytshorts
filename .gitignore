@@ -7,14 +7,32 @@ test.py
 # UUID json dumps
 *.uuid.json
 *.json
+
 #SRT FILES
 *.srt
+
+#DB FILES
+*.db
+
+#SQLITE FILES
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-shm
+*.sqlite3-wal
+
+
 
 #mp3 and mp4
 *.mp3
 *.mp4
 # C extensions
+
 *.so
+
+
+
+
 
 # csv
 *.csv
