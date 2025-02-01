@@ -328,6 +328,10 @@ class SubtitleEngine:
         self.stroke_width = config.get('stroke_width', 2)
         self.resolution = config.get('vertical_resolution', (1080, 1920))
 
+    def _effect_subtitles(self, subtitles: SubtitlesClip) -> SubtitlesClip:
+        # Add a fade in and fade out effect to the subtitles
+        return subtitles.with_effects([vfx.CrossFadeIn(0.1), vfx.CrossFadeOut(0.1)])
+
     def _create_srt_file_from_json(self, subtitle_data: Dict) -> List[Tuple[Tuple[float, float], str]]:
         """Converts JSON timing data into character-accurate subtitle entries with dynamic timing.
 
@@ -374,7 +378,7 @@ class SubtitleEngine:
         current_text = []
         segment_start = char_timings[0][1]
         last_char_end = segment_start
-        max_segment_chars = 40
+        max_segment_chars = 60
 
         for i, (char, start_time) in enumerate(char_timings):
             current_text.append(char)
@@ -391,16 +395,20 @@ class SubtitleEngine:
 
             if any(break_conditions):
                 text = ''.join(current_text).strip()
+                # Add ellipsis if the text is too long
+                if len(current_text) >= max_segment_chars:
+                    text += '...'
+
                 word_count = len(text.split())
 
                 # Dynamic timing based on word count
-                base_buffer = 0.2
-                word_based_buffer = 0.5 * word_count
-                buffer = min(max(base_buffer, word_based_buffer), 2.5)
+                base_buffer = 0.8
+                word_based_buffer = 1 * word_count
+                buffer = min(max(base_buffer, word_based_buffer), 3.5)
 
-                base_min_duration = 0.2
-                word_based_min = 0.5 * word_count
-                min_duration = min(max(base_min_duration, word_based_min), 2.5)
+                base_min_duration = 0.8
+                word_based_min = 1 * word_count
+                min_duration = min(max(base_min_duration, word_based_min), 3.5)
 
                 end_time = last_char_end + buffer
                 if (end_time - segment_start) < min_duration:
@@ -518,7 +526,9 @@ class SubtitleEngine:
                 subtitles = SubtitlesClip(
                     subtitle_entries, make_textclip=text_clip_generator, encoding='utf-8')
 
-                subtitles = subtitles.with_position(("center", "bottom"))
+                subtitles = subtitles.with_position(
+                    ("center", 0.85), relative=True)
+
                 return subtitles
 
             except (IOError, OSError, ValueError) as e:
@@ -667,10 +677,10 @@ class VideoPipeline:
 
 DEFAULT_CONFIG = {
     'font_path': r'demo\font_at.ttf',
-    'font_size': 70,
+    'font_size': 75,
     'subtitle_color': 'white',
     'stroke_color': 'black',
-    'stroke_width': 2,
+    'stroke_width': 10,
     'vertical_resolution': (1080, 1920),
     'subtitle_position': ('center', 0.85),
     'music_volume': 0.3,
