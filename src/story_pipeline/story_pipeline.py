@@ -8,8 +8,9 @@ from datetime import datetime
 from .reddit_crawl import get_posts, parse_text
 from .elevenlabs_api import process_csv
 from .whisper_api import transcribe_audio, load_whisper_model
-from .db_manager import DatabaseManager, Story, get_story_file_paths
+from ..db import DatabaseManager, Story, get_story_file_paths
 from ..load_env import load_env
+from ..db import StoryStatus
 
 logging.basicConfig(level=logging.INFO,
                     format='%(filename)s - %(lineno)d - %(asctime)s - %(levelname)s - %(message)s')
@@ -81,7 +82,7 @@ class RedditStoryProcessor(StoryProcessor):
                 url=post_data['permalink'],
                 text=parse_text(post_data['text']),
                 created_at=datetime.now(),
-                status='new'
+                status=StoryStatus.NEW
             )
             self.db_manager.add_story(story)
             story_ids.append(story_id)
