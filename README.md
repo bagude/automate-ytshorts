@@ -6,7 +6,10 @@ An advanced automation pipeline for creating and publishing engaging YouTube Sho
 
 ### Story Pipeline
 
-- **Reddit Story Crawling**: Automatically fetches engaging stories from specified subreddits
+- **Reddit Story Crawling**:
+  - Automatically fetches engaging stories from specified subreddits
+  - Single story or batch processing options
+  - Support for popular subreddits like r/tifu
 - **Text-to-Speech Generation**: Converts stories into natural-sounding voiceovers using ElevenLabs API
 - **Subtitle Generation**: Creates accurate subtitles using Whisper API for better engagement
 - **Database Management**: Efficiently tracks and manages processed stories
@@ -60,59 +63,94 @@ REDDIT_CLIENT_SECRET=your_client_secret
 REDDIT_USER_AGENT=your_user_agent
 ```
 
-## 📖 Usage
+## 📖 Interactive Menu Usage
 
-### Story Pipeline
+Launch the interactive menu with:
 
-```python
-from story_pipeline.story_pipeline import StoryPipeline
-
-config = {
-    "subreddit": "tifu",  # or any other subreddit
-    "output_dirs": {
-        "json": "demo/json",
-        "mp3": "demo/mp3"
-    }
-}
-
-pipeline = StoryPipeline(config)
-pipeline.run()
+```bash
+python -m src.story_pipeline.cli menu
 ```
 
-### Video Pipeline
+### Main Menu Options
 
-```python
-from video_pipeline.video_pipeline import VideoPipeline
+1. **Story Management**
 
-config = {
-    "video": {
-        "width": 1080,
-        "height": 1920
-    },
-    "subtitle": {
-        "font": "demo/font_at.ttf",
-        "font_size": 40,
-        "color": "white"
-    }
-}
+   - List Stories: View all stories in the database
+   - Show Story Details: Get detailed information about a specific story
+   - Crawl New Stories: Fetch new stories from Reddit
+   - Delete Story: Remove a story from the database
+   - Retry Failed Story: Retry processing a failed story
 
-with VideoPipeline(config) as pipeline:
-    pipeline.execute(
-        output_path="output.mp4",
-        tts_path="demo/mp3/story.mp3",
-        music_path="background.mp3",
-        video_path="background.mp4",
-        text="Story text for subtitles"
-    )
-```
+2. **Video Creation**
 
-## 📝 License
+   - Create Video for Story: Generate a video for a specific story
+   - Process All Ready Stories: Create videos for all stories marked as ready
+   - Retry Failed Video: Retry video creation for a failed story
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+3. **System Status**
+   - Show Error Stories: List stories with errors
+   - Show Ready Stories: List stories ready for video creation
+   - Show Processing Stories: List stories currently being processed
+   - Clean Up Failed Stories: Remove failed stories from the database
+
+## 🎯 Quick Tutorial
+
+### Creating Your First Video
+
+1. Launch the menu: `python -m src.story_pipeline.cli menu`
+2. Select "Story Management" (Option 1)
+3. Choose "Crawl New Stories" (Option 3)
+4. Enter "tifu" as the subreddit
+5. Choose "yes" to process only one story (recommended for testing)
+6. Wait for the story to be processed
+7. Go back to main menu and select "Video Creation" (Option 2)
+8. Choose "Create Video for Story" (Option 1)
+9. Select your story from the list
+10. Wait for video creation to complete
+
+### Managing Stories
+
+- Use the Story Management menu to:
+  - View all stories with `List Stories`
+  - Check story details including status and error messages
+  - Delete unwanted stories
+  - Retry failed stories
+
+### Creating Videos
+
+- Use the Video Creation menu to:
+  - Create videos for individual stories
+  - Batch process all ready stories
+  - Retry failed video creations
+
+### Monitoring Status
+
+- Use the System Status menu to:
+  - Track story processing status
+  - Identify and fix errors
+  - Clean up failed stories
+
+## 🎵 Extra Features
+
+- **Retro Menu Music**: Enjoy a nostalgic bit-tune while navigating the menus
+- **Interactive Story Selection**: Easy-to-use numbered menu for story selection
+- **Error Handling**: Graceful error handling with helpful messages
+- **Status Tracking**: Comprehensive status tracking for all processing stages
+
+## 💡 Tips
+
+- Start with single story processing to test your setup
+- Use the status menu to monitor story processing
+- Check story details before video creation to ensure all required files are present
+- Use the retry options if processing fails
 
 ## 🤝 Contributing
 
-Contributions are welcome! Feel free to submit issues and pull requests.
+Feel free to contribute to this project! Open issues, submit pull requests, or suggest new features.
+
+## 📄 License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## ⚠️ Disclaimer
 
