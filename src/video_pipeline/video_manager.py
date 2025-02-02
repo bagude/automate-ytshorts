@@ -1,7 +1,8 @@
 import os
 import logging
 from typing import Dict, Optional, List
-from ..story_pipeline.db_manager import DatabaseManager, Story
+from ..db import DatabaseManager, Story
+from ..db.constants import StoryStatus
 from .video_pipeline import VideoPipeline, DEFAULT_CONFIG
 
 logging.basicConfig(level=logging.INFO,
@@ -10,12 +11,6 @@ logging.basicConfig(level=logging.INFO,
 
 class VideoManager:
     """Manages video creation for stories using VideoPipeline."""
-
-    # Story status constants
-    STATUS_READY = 'ready'  # Initial ready state (audio and subtitles done)
-    STATUS_VIDEO_PROCESSING = 'video_processing'  # Video is being created
-    STATUS_VIDEO_READY = 'video_ready'  # Video creation completed
-    STATUS_VIDEO_ERROR = 'video_error'  # Video creation failed
 
     def __init__(self, db_manager: DatabaseManager, video_config: Optional[Dict] = None):
         """Initialize the video manager.
@@ -33,11 +28,26 @@ class VideoManager:
         Returns:
             List[Story]: List of stories that can have videos created
         """
-        # Get stories that are either ready for first processing or already have videos
-        return self.db_manager.get_stories_by_multiple_statuses([
-            self.STATUS_READY,
-            self.STATUS_VIDEO_READY
-        ])
+        ready_statuses = StoryStatus.get_video_ready_statuses()
+        logging.info(
+            f"Looking for stories with statuses: {[status.value for status in ready_statuses]}")
+
+        stories = self.db_manager.get_stories_by_multiple_statuses(
+            ready_statuses)
+
+        # Filter out stories that don't have required files
+        valid_stories = []
+        for story in stories:
+            if not story.audio_path or not story.timestamps_path:
+                logging.debug(f"Skipping story {story.id} - missing required files: " +
+                              f"audio_path={'✓' if story.audio_path else '✗'}, " +
+                              f"timestamps_path={'✓' if story.timestamps_path else '✗'}")
+                continue
+            valid_stories.append(story)
+
+        logging.info(
+            f"Found {len(valid_stories)} stories ready for video creation")
+        return valid_stories
 
     def create_video_for_story(self, story: Story, output_path: Optional[str] = None) -> None:
         """Create a video for a specific story.
@@ -46,7 +56,7 @@ class VideoManager:
             story: Story object to create video for
             output_path: Optional custom output path for the video
         """
-        if story.status not in [self.STATUS_READY, self.STATUS_VIDEO_READY]:
+        if story.status not in StoryStatus.get_video_ready_statuses():
             raise ValueError(
                 f"Story {story.id} is not ready for video creation (status: {story.status})")
 
@@ -62,7 +72,7 @@ class VideoManager:
 
             # Update story status
             self.db_manager.update_story_status(
-                story.id, self.STATUS_VIDEO_PROCESSING)
+                story.id, StoryStatus.VIDEO_PROCESSING)
 
             # Create video using pipeline
             with VideoPipeline(self.video_config) as pipeline:
@@ -79,7 +89,7 @@ class VideoManager:
 
             # Update story status and path
             self.db_manager.update_story_status(
-                story.id, self.STATUS_VIDEO_READY)
+                story.id, StoryStatus.VIDEO_READY)
             self.db_manager.update_story_paths(
                 story.id, subtitles_path=output_path)
 
@@ -89,7 +99,7 @@ class VideoManager:
             error_msg = f"Failed to create video: {str(e)}"
             logging.error(error_msg)
             self.db_manager.update_story_status(
-                story.id, self.STATUS_VIDEO_ERROR, error_msg)
+                story.id, StoryStatus.VIDEO_ERROR, error_msg)
             raise
 
     def process_ready_stories(self) -> None:
@@ -117,10 +127,10 @@ class VideoManager:
         if not story:
             raise ValueError(f"Story {story_id} not found")
 
-        if story.status not in [self.STATUS_VIDEO_ERROR, self.STATUS_VIDEO_PROCESSING]:
+        if story.status not in [StoryStatus.VIDEO_ERROR, StoryStatus.VIDEO_PROCESSING]:
             raise ValueError(
                 f"Story {story_id} is not in a failed video state (status: {story.status})")
 
         # Reset status and retry
-        self.db_manager.update_story_status(story_id, self.STATUS_READY)
+        self.db_manager.update_story_status(story_id, StoryStatus.READY)
         self.create_video_for_story(story)

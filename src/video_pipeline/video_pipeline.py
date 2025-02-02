@@ -1,13 +1,12 @@
 import os
-import math
 import json
 import logging
 import sys
 from types import TracebackType
 from typing import List, Tuple, Optional, Dict, Union, Type
+from abc import ABC, abstractmethod
 from moviepy import *
 from moviepy.video.tools.subtitles import SubtitlesClip
-from abc import ABC, abstractmethod
 
 logging.basicConfig(level=logging.INFO,
                     format='%(filename)s - %(lineno)d - %(asctime)s - %(levelname)s - %(message)s')
