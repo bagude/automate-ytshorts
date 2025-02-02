@@ -96,7 +96,7 @@ class TextToSpeechProcessor(StoryProcessor):
         self.db_manager = db_manager
         self.base_dir = base_dir
         self.api_key = load_env("eleven-labs")[0]
-        self.voice_id = "YFpUSo240svj7tcmDapZ"  # Default voice ID
+        self.voice_id = "YFpUSo240svj7tcmDapZ"
 
     def process(self, story_ids: List[str]) -> None:
         """Converts text to speech using ElevenLabs API.
@@ -113,7 +113,10 @@ class TextToSpeechProcessor(StoryProcessor):
 
             try:
                 # Get paths for this story
-                paths = get_story_file_paths(story_id, self.base_dir)
+                story_dir = os.path.join(self.base_dir, story_id)
+                os.makedirs(story_dir, exist_ok=True)
+
+                audio_path = os.path.join(story_dir, "audio.mp3")
 
                 # Process TTS
                 from .elevenlabs_api import _make_headers, _make_payload, _handle_timestamps_mode
@@ -124,16 +127,17 @@ class TextToSpeechProcessor(StoryProcessor):
                     self.voice_id,
                     headers,
                     payload,
-                    paths['audio_path'],
-                    os.path.dirname(paths['timestamps_path'])
+                    audio_path,
+                    story_dir  # Pass the story directory
                 )
 
                 if json_id:
-                    # Update database with new paths
+                    # Update database with new paths, including the actual JSON file path
+                    json_path = os.path.join(story_dir, f"{json_id}.json")
                     self.db_manager.update_story_paths(
                         story_id,
-                        audio_path=paths['audio_path'],
-                        timestamps_path=paths['timestamps_path']
+                        audio_path=audio_path,
+                        timestamps_path=json_path  # Use the actual JSON file path
                     )
                     self.db_manager.update_story_status(
                         story_id, 'audio_generated')
