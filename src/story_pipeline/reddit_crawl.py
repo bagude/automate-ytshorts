@@ -21,13 +21,14 @@ def setup_webdriver(headless=True) -> webdriver.Chrome:
     return webdriver.Chrome(options=chrome_options)
 
 
-def get_posts(feed, retries=3, timeout=10) -> dict:
+def get_posts(feed, retries=3, timeout=10, single=False) -> dict:
     """Get posts from a Reddit feed.
 
     Args:
         feed (str): The name of the Reddit feed to crawl
         retries (int): The number of retries to attempt if the request fails
         timeout (int): The timeout for the request in seconds
+        single (bool): If True, only return the first post
 
     Returns:
         dict: A dictionary of posts with their metadata
@@ -48,6 +49,8 @@ def get_posts(feed, retries=3, timeout=10) -> dict:
             if response:
                 success = True
                 list_of_posts = response['data']['children']
+                if single and list_of_posts:  # If single mode, only process the first post
+                    list_of_posts = [list_of_posts[0]]
                 for post in list_of_posts:
                     data = post['data']
                     title = data['title']
