@@ -268,6 +268,31 @@ class DatabaseManager:
             stories.append(Story(**row_dict))
         return stories
 
+    def get_stories_by_multiple_statuses(self, statuses: List[str]) -> List[Story]:
+        """Retrieve all stories with any of the given statuses.
+
+        Args:
+            statuses (List[str]): List of statuses to filter by
+
+        Returns:
+            List[Story]: List of matching stories
+        """
+        placeholders = ','.join('?' * len(statuses))
+        cursor = self.conn.execute(f"""
+            SELECT * FROM stories 
+            WHERE status IN ({placeholders})
+            ORDER BY created_at DESC
+        """, statuses)
+        stories = []
+        for row in cursor.fetchall():
+            row_dict = dict(row)
+            # Convert created_at string to datetime
+            if isinstance(row_dict['created_at'], str):
+                row_dict['created_at'] = self._parse_datetime(
+                    row_dict['created_at'])
+            stories.append(Story(**row_dict))
+        return stories
+
 
 def get_story_folder_path(story_id: str, base_dir: str = "demo/stories") -> str:
     """Get the folder path for a story's files.
