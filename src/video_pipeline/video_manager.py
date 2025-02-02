@@ -11,6 +11,12 @@ logging.basicConfig(level=logging.INFO,
 class VideoManager:
     """Manages video creation for stories using VideoPipeline."""
 
+    # Story status constants
+    STATUS_READY = 'ready'  # Initial ready state (audio and subtitles done)
+    STATUS_VIDEO_PROCESSING = 'video_processing'  # Video is being created
+    STATUS_VIDEO_READY = 'video_ready'  # Video creation completed
+    STATUS_VIDEO_ERROR = 'video_error'  # Video creation failed
+
     def __init__(self, db_manager: DatabaseManager, video_config: Optional[Dict] = None):
         """Initialize the video manager.
 
@@ -25,9 +31,13 @@ class VideoManager:
         """Get all stories that are ready for video creation.
 
         Returns:
-            List[Story]: List of stories with 'ready' status
+            List[Story]: List of stories that can have videos created
         """
-        return self.db_manager.get_stories_by_status('ready')
+        # Get stories that are either ready for first processing or already have videos
+        return self.db_manager.get_stories_by_multiple_statuses([
+            self.STATUS_READY,
+            self.STATUS_VIDEO_READY
+        ])
 
     def create_video_for_story(self, story: Story, output_path: Optional[str] = None) -> None:
         """Create a video for a specific story.
@@ -36,7 +46,7 @@ class VideoManager:
             story: Story object to create video for
             output_path: Optional custom output path for the video
         """
-        if story.status != 'ready':
+        if story.status not in [self.STATUS_READY, self.STATUS_VIDEO_READY]:
             raise ValueError(
                 f"Story {story.id} is not ready for video creation (status: {story.status})")
 
@@ -51,7 +61,8 @@ class VideoManager:
                 output_path = os.path.join(output_dir, "final.mp4")
 
             # Update story status
-            self.db_manager.update_story_status(story.id, 'video_processing')
+            self.db_manager.update_story_status(
+                story.id, self.STATUS_VIDEO_PROCESSING)
 
             # Create video using pipeline
             with VideoPipeline(self.video_config) as pipeline:
@@ -67,7 +78,8 @@ class VideoManager:
                 )
 
             # Update story status and path
-            self.db_manager.update_story_status(story.id, 'video_ready')
+            self.db_manager.update_story_status(
+                story.id, self.STATUS_VIDEO_READY)
             self.db_manager.update_story_paths(
                 story.id, subtitles_path=output_path)
 
@@ -77,7 +89,7 @@ class VideoManager:
             error_msg = f"Failed to create video: {str(e)}"
             logging.error(error_msg)
             self.db_manager.update_story_status(
-                story.id, 'video_error', error_msg)
+                story.id, self.STATUS_VIDEO_ERROR, error_msg)
             raise
 
     def process_ready_stories(self) -> None:
@@ -105,10 +117,10 @@ class VideoManager:
         if not story:
             raise ValueError(f"Story {story_id} not found")
 
-        if story.status not in ['video_error', 'video_processing']:
+        if story.status not in [self.STATUS_VIDEO_ERROR, self.STATUS_VIDEO_PROCESSING]:
             raise ValueError(
                 f"Story {story_id} is not in a failed video state (status: {story.status})")
 
         # Reset status and retry
-        self.db_manager.update_story_status(story_id, 'ready')
+        self.db_manager.update_story_status(story_id, self.STATUS_READY)
         self.create_video_for_story(story)
