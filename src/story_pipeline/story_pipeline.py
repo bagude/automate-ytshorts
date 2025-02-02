@@ -56,9 +56,10 @@ class StoryProcessor(ABC):
 class RedditStoryProcessor(StoryProcessor):
     """Handles Reddit story crawling and processing."""
 
-    def __init__(self, subreddit: str, db_manager: DatabaseManager):
+    def __init__(self, subreddit: str, db_manager: DatabaseManager, single_story: bool = False):
         self.subreddit = subreddit
         self.db_manager = db_manager
+        self.single_story = single_story
 
     def process(self) -> List[str]:
         """Crawls Reddit for stories and saves them to database.
@@ -67,7 +68,7 @@ class RedditStoryProcessor(StoryProcessor):
             List[str]: List of story IDs that were processed
         """
         logging.info(f"Crawling stories from r/{self.subreddit}")
-        posts = get_posts(self.subreddit)
+        posts = get_posts(self.subreddit, single=self.single_story)
         story_ids = []
 
         for title, post_data in posts.items():
@@ -85,7 +86,10 @@ class RedditStoryProcessor(StoryProcessor):
             self.db_manager.add_story(story)
             story_ids.append(story_id)
 
-        logging.info(f"Saved {len(story_ids)} stories to database")
+        if self.single_story:
+            logging.info("Saved first story to database")
+        else:
+            logging.info(f"Saved {len(story_ids)} stories to database")
         return story_ids
 
 
@@ -208,6 +212,7 @@ class StoryPipeline:
                 - base_dir: Base directory for story files
                 - db_path: Path to SQLite database
                 - whisper_model: Name of Whisper model to use
+                - single_story: Whether to process only one story
         """
         self.config = config
         self.validate_config()
@@ -219,7 +224,8 @@ class StoryPipeline:
         # Create processors
         self.reddit_processor = RedditStoryProcessor(
             config['subreddit'],
-            self.db_manager
+            self.db_manager,
+            config.get('single_story', False)
         )
 
         self.tts_processor = TextToSpeechProcessor(
@@ -268,7 +274,8 @@ def main():
         'subreddit': 'tifu',
         'base_dir': 'demo/stories',
         'db_path': 'demo/story_pipeline.db',
-        'whisper_model': 'base'
+        'whisper_model': 'base',
+        'single_story': False
     }
 
     pipeline = StoryPipeline(config)
