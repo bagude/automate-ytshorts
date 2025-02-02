@@ -219,11 +219,17 @@ def create_video(story_id: Optional[str], process_all: bool):
                 click.echo(f"Story {story_id} not found.")
                 return
 
+            click.echo(f"Creating video for story {story_id}")
+            click.echo(f"Story status: {story.status}")
+            click.echo(f"Audio path: {story.audio_path}")
+            click.echo(f"Timestamps path: {story.timestamps_path}")
+
             try:
                 video_manager.create_video_for_story(story)
                 click.echo(f"Successfully created video for story {story_id}")
             except Exception as e:
                 click.echo(f"Failed to create video: {str(e)}")
+                raise  # Re-raise to see the full traceback
 
 
 @cli.command()
