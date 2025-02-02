@@ -132,13 +132,18 @@ def _handle_timestamps_mode(voice_id, headers, payload, mp3_path, json_folder):
         logging.warning("No alignment data received for %s", mp3_path)
         return None
 
+    # Generate a unique ID for the JSON file
     json_id = str(uuid.uuid4())
     json_path = os.path.join(json_folder, f"{json_id}.json")
-    with open(json_path, "w", encoding="utf-8") as jfile:
-        json.dump(alignment_data, jfile)
-    logging.debug("Saved alignment data to %s", json_path)
 
-    return json_id
+    try:
+        with open(json_path, "w", encoding="utf-8") as jfile:
+            json.dump(alignment_data, jfile)
+        logging.info("Saved alignment data to %s", json_path)
+        return json_id
+    except Exception as e:
+        logging.error("Failed to save alignment data: %s", str(e))
+        return None
 
 
 def _handle_default_mode(voice_id, headers, payload, mp3_path):
