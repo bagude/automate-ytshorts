@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import logging
+import shutil
 from typing import Dict, List, Optional
 from datetime import datetime
 from .models import Story
@@ -211,15 +212,22 @@ class DatabaseManager:
             List[Story]: List of matching stories
         """
         try:
-            # Convert enum values to strings
-            status_strings = [str(status.value) for status in statuses]
+            # Convert to full enum strings as stored in database
+            status_strings = [
+                f"StoryStatus.{status.name}" for status in statuses]
             placeholders = ','.join(['?' for _ in status_strings])
             query = f"SELECT * FROM stories WHERE status IN ({placeholders}) ORDER BY created_at DESC"
 
-            logging.debug(
-                f"Executing query: {query} with statuses: {status_strings}")
-            cursor = self.conn.execute(query, status_strings)
+            logging.info(f"Executing multiple status query: {query}")
+            logging.info(f"Status values being queried: {status_strings}")
 
+            # Debug: show what's in the database before query
+            cursor = self.conn.execute("SELECT id, status FROM stories")
+            all_stories = cursor.fetchall()
+            logging.info(
+                f"All stories in database before query: {[(row[0], row[1]) for row in all_stories]}")
+
+            cursor = self.conn.execute(query, status_strings)
             stories = []
             for row in cursor.fetchall():
                 row_dict = dict(row)
@@ -228,8 +236,12 @@ class DatabaseManager:
                         row_dict['created_at'])
                 stories.append(Story(**row_dict))
 
-            logging.debug(
+            logging.info(
                 f"Found {len(stories)} stories with statuses {status_strings}")
+            for story in stories:
+                logging.info(
+                    f"Found story: id={story.id}, status={story.status}")
+
             return stories
         except Exception as e:
             logging.error(
@@ -310,3 +322,78 @@ class DatabaseManager:
                     row_dict['created_at'])
             stories.append(Story(**row_dict))
         return stories
+
+    def cleanup_database(self, remove_files: bool = True) -> None:
+        """Performs a complete cleanup of the database and optionally removes associated files.
+
+        This is essentially a factory reset that:
+        1. Deletes all records from the stories table
+        2. Optionally removes all generated files (audio, timestamps, videos)
+        3. Resets the database to its initial state
+
+        Args:
+            remove_files: If True, also removes all generated files from disk
+        """
+        try:
+            # Get all stories first if we need to remove files
+            stories = []
+            if remove_files:
+                stories = self.get_all_stories()
+
+            # Delete all records
+            with self.conn:
+                self.conn.execute("DELETE FROM stories")
+            logging.info("Cleared all records from database")
+
+            # Remove files if requested
+            if remove_files:
+                for story in stories:
+                    self._remove_story_files(story)
+
+                # Also clean up the demo directories
+                demo_dirs = [
+                    "demo/stories",
+                    "demo/videos"
+                ]
+                for dir_path in demo_dirs:
+                    if os.path.exists(dir_path):
+                        shutil.rmtree(dir_path)
+                        os.makedirs(dir_path, exist_ok=True)
+                        logging.info(
+                            f"Cleaned and recreated directory: {dir_path}")
+
+            logging.info("Database cleanup completed successfully")
+
+        except Exception as e:
+            logging.error(f"Error during database cleanup: {str(e)}")
+            raise
+
+    def _remove_story_files(self, story: Story) -> None:
+        """Removes all files associated with a story.
+
+        Args:
+            story: Story object whose files should be removed
+        """
+        try:
+            # Remove individual files
+            for file_path in [story.audio_path, story.timestamps_path, story.subtitles_path]:
+                if file_path and os.path.exists(file_path):
+                    os.remove(file_path)
+                    logging.debug(f"Removed file: {file_path}")
+
+            # Remove story directory if it exists
+            story_dir = os.path.join("demo/stories", story.id)
+            if os.path.exists(story_dir):
+                shutil.rmtree(story_dir)
+                logging.debug(f"Removed directory: {story_dir}")
+
+            # Remove video directory if it exists
+            video_dir = os.path.join("demo/videos", story.id)
+            if os.path.exists(video_dir):
+                shutil.rmtree(video_dir)
+                logging.debug(f"Removed directory: {video_dir}")
+
+        except Exception as e:
+            logging.warning(
+                f"Error removing files for story {story.id}: {str(e)}")
+            # Don't raise the error as this is a cleanup operation
