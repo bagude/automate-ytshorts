@@ -62,6 +62,11 @@ An advanced automation pipeline for creating and publishing engaging YouTube Sho
   - Special effects and transitions
   - Progress tracking and error recovery
 
+## Demo
+
+https://github.com/user-attachments/assets/dba305d3-9ab1-49da-8f1d-fb7ba12306bd
+
+
 ## 🚀 Getting Started
 
 ### Prerequisites
@@ -71,12 +76,6 @@ An advanced automation pipeline for creating and publishing engaging YouTube Sho
 - Required API keys:
   - ElevenLabs API key
   - Reddit API credentials (optional)
-
-
-## Demo
-
-https://github.com/user-attachments/assets/dba305d3-9ab1-49da-8f1d-fb7ba12306bd
-
 ### Installation
 
 1. Clone the repository:
