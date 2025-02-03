@@ -277,5 +277,91 @@ def reset(keep_files: bool, force: bool):
         raise
 
 
+@cli.command()
+@click.argument('story_id')
+def remake_video(story_id: str):
+    """Remake video for a story using existing TTS and timestamps files.
+
+    This only runs the video creation step, assuming all required files exist.
+    """
+    with get_db() as db:
+        story = db.get_story(story_id)
+        if not story:
+            click.echo(f"Story {story_id} not found.")
+            return
+
+        if not story.audio_path or not story.timestamps_path:
+            click.echo(f"Story {story_id} is missing required files:")
+            click.echo(f"Audio path: {'✓' if story.audio_path else '✗'}")
+            click.echo(
+                f"Timestamps path: {'✓' if story.timestamps_path else '✗'}")
+            return
+
+        try:
+            from ..video_pipeline.video_pipeline import VideoPipeline, DEFAULT_CONFIG
+
+            # Set up output path
+            output_dir = os.path.join("demo", "videos", story.id)
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, "final.mp4")
+
+            click.echo("Starting video creation...")
+            with VideoPipeline(DEFAULT_CONFIG) as pipeline:
+                pipeline.execute(
+                    output_path=output_path,
+                    tts_path=story.audio_path,
+                    music_path=os.path.join("demo", "mp3", "bg_music.mp3"),
+                    video_path=os.path.join("demo", "mp4", "background.mp4"),
+                    text=story.text,
+                    subtitle_json=story.timestamps_path
+                )
+            click.echo(f"✨ Successfully created video: {output_path}")
+
+        except Exception as e:
+            click.echo(f"❌ Failed to create video: {str(e)}")
+            raise
+
+
+@cli.command()
+@click.argument('story_id')
+def remake_subtitles(story_id: str):
+    """Remake subtitles for a story using existing TTS and timestamps files.
+
+    This only runs the subtitle generation step, assuming the required files exist.
+    """
+    with get_db() as db:
+        story = db.get_story(story_id)
+        if not story:
+            click.echo(f"Story {story_id} not found.")
+            return
+
+        if not story.audio_path or not story.timestamps_path:
+            click.echo(f"Story {story_id} is missing required files:")
+            click.echo(f"Audio path: {'✓' if story.audio_path else '✗'}")
+            click.echo(
+                f"Timestamps path: {'✓' if story.timestamps_path else '✗'}")
+            return
+
+        try:
+            from ..video_pipeline.video_pipeline import SubtitleEngine, DEFAULT_CONFIG
+
+            click.echo("Starting subtitle generation...")
+            subtitle_engine = SubtitleEngine(DEFAULT_CONFIG)
+            subtitles = subtitle_engine.generate_subtitles(
+                text=story.text,
+                duration=60,  # This duration doesn't matter for subtitle generation from timestamps
+                subtitle_json=story.timestamps_path
+            )
+            click.echo("✨ Successfully regenerated subtitles")
+
+            if click.confirm("Would you like to remake the video with the new subtitles?"):
+                ctx = click.get_current_context()
+                ctx.invoke(remake_video, story_id=story_id)
+
+        except Exception as e:
+            click.echo(f"❌ Failed to generate subtitles: {str(e)}")
+            raise
+
+
 if __name__ == '__main__':
     cli()

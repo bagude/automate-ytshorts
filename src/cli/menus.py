@@ -4,7 +4,7 @@ from threading import Thread
 from playsound import playsound
 from typing import Optional
 
-from .commands import cli, list_stories, show, crawl, delete, retry, cleanup, create_video, retry_video
+from .commands import cli, list_stories, show, crawl, delete, retry, cleanup, create_video, retry_video, remake_video, remake_subtitles
 from .formatters import show_banner
 from .settings import get_music_enabled, set_music_enabled
 from ..db import StoryStatus
@@ -225,6 +225,8 @@ def _show_video_menu():
         click.echo("\n1. Create Video for Story")
         click.echo("2. Process All Ready Stories")
         click.echo("3. Retry Failed Video")
+        click.echo("4. Remake Video (using existing files)")
+        click.echo("5. Remake Subtitles")
         click.echo("\n0. Back")
 
         try:
@@ -273,6 +275,36 @@ def _show_video_menu():
                 except Exception as e:
                     logging.error(f"Error retrying video: {str(e)}")
                     click.echo(f"Error retrying video: {str(e)}")
+            elif choice == 4:
+                logging.info("Starting video remake")
+                try:
+                    # Show all stories and let user select one
+                    story_id = _show_available_stories()
+                    if story_id:
+                        logging.info(
+                            f"Selected story ID for remake: {story_id}")
+                        ctx = click.get_current_context()
+                        ctx.invoke(remake_video, story_id=story_id)
+                    else:
+                        logging.info("No story selected")
+                except Exception as e:
+                    logging.error(f"Error remaking video: {str(e)}")
+                    click.echo(f"Error remaking video: {str(e)}")
+            elif choice == 5:
+                logging.info("Starting subtitle remake")
+                try:
+                    # Show all stories and let user select one
+                    story_id = _show_available_stories()
+                    if story_id:
+                        logging.info(
+                            f"Selected story ID for subtitle remake: {story_id}")
+                        ctx = click.get_current_context()
+                        ctx.invoke(remake_subtitles, story_id=story_id)
+                    else:
+                        logging.info("No story selected")
+                except Exception as e:
+                    logging.error(f"Error remaking subtitles: {str(e)}")
+                    click.echo(f"Error remaking subtitles: {str(e)}")
             else:
                 click.echo("Invalid option")
         except Exception as e:
