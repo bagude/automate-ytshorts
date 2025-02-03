@@ -138,24 +138,32 @@ class TextToSpeechProcessor(StoryProcessor):
 
                 if json_id:
                     # Update database with new paths, including the actual JSON file path
-                    json_path = os.path.join(story_dir, f"{json_id}.json")
+                    json_path = os.path.normpath(
+                        os.path.join(story_dir, "timestamps.json"))
+                    audio_path = os.path.normpath(audio_path)
+
+                    # Rename the JSON file to a consistent name
+                    temp_json_path = os.path.join(story_dir, f"{json_id}.json")
+                    if os.path.exists(temp_json_path):
+                        os.rename(temp_json_path, json_path)
+
                     self.db_manager.update_story_paths(
                         story_id,
                         audio_path=audio_path,
-                        timestamps_path=json_path  # Use the actual JSON file path
+                        timestamps_path=json_path  # Use the consistent JSON file path
                     )
                     self.db_manager.update_story_status(
-                        story_id, 'audio_generated')
+                        story_id, StoryStatus.AUDIO_GENERATED)
                 else:
                     self.db_manager.update_story_status(
                         story_id,
-                        'error',
+                        StoryStatus.ERROR,
                         'Failed to generate audio timestamps'
                     )
             except Exception as e:
                 self.db_manager.update_story_status(
                     story_id,
-                    'error',
+                    StoryStatus.ERROR,
                     f'TTS generation failed: {str(e)}'
                 )
 
@@ -182,21 +190,35 @@ class SubtitleGenerator(StoryProcessor):
 
         for story_id in story_ids:
             story = self.db_manager.get_story(story_id)
-            if not story or not story.audio_path or story.status != 'audio_generated':
+            if not story or not story.audio_path or story.status != StoryStatus.AUDIO_GENERATED:
                 continue
 
             logging.info(f"Generating subtitles for story: {story.title}")
             try:
+                # Get the directory from the timestamps path
+                json_dir = os.path.dirname(story.timestamps_path)
+
+                # Generate subtitles
                 transcribe_audio(
                     audio_path=story.audio_path,
                     model=self.model,
-                    json_folder=os.path.dirname(story.timestamps_path)
+                    json_folder=json_dir
                 )
-                self.db_manager.update_story_status(story_id, 'ready')
+
+                # Verify the file exists before updating status
+                if os.path.exists(story.timestamps_path):
+                    self.db_manager.update_story_status(
+                        story_id, StoryStatus.READY)
+                else:
+                    self.db_manager.update_story_status(
+                        story_id,
+                        StoryStatus.ERROR,
+                        'Subtitle file was not generated'
+                    )
             except Exception as e:
                 self.db_manager.update_story_status(
                     story_id,
-                    'error',
+                    StoryStatus.ERROR,
                     f'Subtitle generation failed: {str(e)}'
                 )
 
