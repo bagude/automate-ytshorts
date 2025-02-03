@@ -246,5 +246,36 @@ def retry_video(story_id: str):
             click.echo(f"Failed to retry video creation: {str(e)}")
 
 
+@cli.command()
+@click.option('--keep-files', is_flag=True, help="Keep generated files on disk")
+@click.option('--force', is_flag=True, help="Skip confirmation prompt")
+def reset(keep_files: bool, force: bool):
+    """Reset the database to factory settings.
+
+    This will delete all stories and optionally remove all generated files.
+    Use with caution as this operation cannot be undone.
+    """
+    if not force:
+        warning = "⚠️ WARNING: This will delete all stories from the database"
+        if not keep_files:
+            warning += " and remove all generated files"
+        warning += ".\nThis action cannot be undone!"
+
+        if not click.confirm(f"\n{warning}\n\nAre you absolutely sure you want to continue?"):
+            click.echo("Operation cancelled.")
+            return
+
+    try:
+        with get_db() as db:
+            click.echo("Starting database reset...")
+            db.cleanup_database(remove_files=not keep_files)
+            click.echo("✨ Database has been reset to factory settings.")
+            if not keep_files:
+                click.echo("📂 All generated files have been removed.")
+    except Exception as e:
+        click.echo(f"❌ Error during reset: {str(e)}")
+        raise
+
+
 if __name__ == '__main__':
     cli()

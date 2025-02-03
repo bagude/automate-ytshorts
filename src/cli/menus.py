@@ -28,31 +28,52 @@ def _show_available_stories(status: Optional[str] = None) -> Optional[str]:
     """Show available stories and let user select one.
     Returns the selected story ID or None if cancelled."""
     from .commands import get_db
-    logging.debug(
+    logging.info(
         f"Fetching stories with status: {status if status else 'all'}")
 
     with get_db() as db:
         if status:
             try:
-                status_enum = StoryStatus(status)
-                logging.debug(
-                    f"Converting status '{status}' to enum: {status_enum}, enum value: {status_enum.value}")
-                stories = db.get_stories_by_status(status_enum)
-                logging.info(
-                    f"Found {len(stories)} stories with status '{status}'")
+                if status == 'ready':
+                    # For video creation, get all video-ready stories
+                    ready_statuses = StoryStatus.get_video_ready_statuses()
+                    logging.info(
+                        f"Getting stories with video-ready statuses: {[str(s) for s in ready_statuses]}")
+                    stories = db.get_stories_by_multiple_statuses(
+                        ready_statuses)
+                    logging.info(
+                        f"Found {len(stories)} stories ready for video creation")
+
+                    # Debug: show what's in the database
+                    cursor = db.conn.execute("SELECT id, status FROM stories")
+                    all_stories = cursor.fetchall()
+                    logging.info(
+                        f"All stories in database: {[(row[0], row[1]) for row in all_stories]}")
+                else:
+                    status_enum = StoryStatus(status)
+                    logging.info(
+                        f"Converting status '{status}' to enum: {status_enum}, enum value: {status_enum.value}")
+                    stories = db.get_stories_by_status(status_enum)
+                    logging.info(
+                        f"Found {len(stories)} stories with status '{status}'")
+
                 if len(stories) == 0:
                     # Debug query to see what statuses exist in the database
                     cursor = db.conn.execute(
                         "SELECT DISTINCT status FROM stories")
                     existing_statuses = [row[0] for row in cursor.fetchall()]
-                    logging.debug(
+                    logging.info(
                         f"Existing status values in database: {existing_statuses}")
-            except ValueError:
-                logging.error(f"Invalid status value: {status}")
+            except ValueError as e:
+                logging.error(
+                    f"Invalid status value: {status}, error: {str(e)}")
                 click.echo(f"Invalid status: {status}")
                 click.echo(
                     f"Valid statuses are: {', '.join(s.value for s in StoryStatus)}")
                 return None
+            except Exception as e:
+                logging.error(f"Error fetching stories: {str(e)}")
+                raise
         else:
             stories = db.get_all_stories()
             logging.info(f"Found {len(stories)} total stories")
