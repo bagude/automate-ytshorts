@@ -870,6 +870,14 @@ class VideoPipeline:
             logging.info(
                 f"Processing video with: output={output_path}, tts={tts_path}, music={music_path}, video={video_path}, fps={fps}")
 
+            # Normalize all paths
+            output_path = os.path.normpath(output_path)
+            tts_path = os.path.normpath(tts_path)
+            music_path = os.path.normpath(music_path)
+            video_path = os.path.normpath(video_path)
+            if subtitle_json:
+                subtitle_json = os.path.normpath(subtitle_json)
+
             # 1. Input validation
             logging.info("Step 1/6: Validating input files and paths")
             self.components['validator'].validate_inputs(
