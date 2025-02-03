@@ -24,9 +24,41 @@ class StoryService:
         return self.db_manager.get_story(story_id)
 
     def process_subreddit(self, config: Dict) -> List[str]:
-        """Processes stories from a subreddit."""
-        pipeline = self.create_pipeline(config)
-        return pipeline.run()
+        """Processes stories from a subreddit.
+
+        Args:
+            config: Configuration dictionary for story pipeline
+
+        Returns:
+            List[str]: List of story IDs that were processed
+
+        Raises:
+            ValueError: If subreddit configuration is invalid
+            Exception: If story processing fails
+        """
+        try:
+            pipeline = self.create_pipeline(config)
+            story_ids = pipeline.run()
+
+            if not story_ids:
+                return []
+
+            # Update status for all processed stories
+            for story_id in story_ids:
+                self.db_manager.update_story_status(story_id, StoryStatus.NEW)
+
+            return story_ids
+
+        except Exception as e:
+            # If we have story IDs but processing failed, update their status
+            if 'story_ids' in locals():
+                for story_id in story_ids:
+                    self.db_manager.update_story_status(
+                        story_id,
+                        StoryStatus.ERROR,
+                        f"Story processing failed: {str(e)}"
+                    )
+            raise
 
     def update_story_status(self, story_id: str, status: StoryStatus, error: Optional[str] = None) -> None:
         """Updates the status of a story."""
