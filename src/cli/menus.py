@@ -3,8 +3,10 @@ import logging
 from threading import Thread
 from playsound import playsound
 from typing import Optional
+import os
+from datetime import datetime
 
-from .commands import cli, list_stories, show, crawl, delete, retry, cleanup, create_video, retry_video, remake_video, remake_subtitles
+from .commands import cli, list_stories, show, crawl, delete, retry, cleanup, create_video, retry_video, remake_video, remake_subtitles, verify, preview, backup, restore
 from .formatters import show_banner
 from .settings import get_music_enabled, set_music_enabled
 from ..db import StoryStatus
@@ -372,6 +374,152 @@ def _show_settings_menu():
             click.pause()
 
 
+def _show_file_menu():
+    """Show file management submenu."""
+    while True:
+        click.clear()
+        click.echo("File Management")
+        click.echo("=" * 30)
+        click.echo("\n1. Verify Files")
+        click.echo("2. Preview Files")
+        click.echo("3. Backup Story")
+        click.echo("4. Restore from Backup")
+        click.echo("\n0. Back")
+
+        try:
+            choice = click.prompt("\nSelect an option", type=int, default=0)
+
+            if choice == 0:
+                break
+            elif choice == 1:
+                logging.info("Starting file verification")
+                try:
+                    # Show all stories and let user select one
+                    story_id = _show_available_stories()
+                    if story_id:
+                        logging.info(
+                            f"Selected story ID for verification: {story_id}")
+                        ctx = click.get_current_context()
+                        ctx.invoke(verify, story_id=story_id, verify_all=False)
+                    else:
+                        logging.info("No story selected")
+                except Exception as e:
+                    logging.error(f"Error verifying files: {str(e)}")
+                    click.echo(f"Error verifying files: {str(e)}")
+            elif choice == 2:
+                logging.info("Starting file preview")
+                try:
+                    # Show all stories and let user select one
+                    story_id = _show_available_stories()
+                    if story_id:
+                        logging.info(
+                            f"Selected story ID for preview: {story_id}")
+                        ctx = click.get_current_context()
+                        ctx.invoke(preview, story_id=story_id, file_type='all')
+                    else:
+                        logging.info("No story selected")
+                except Exception as e:
+                    logging.error(f"Error previewing files: {str(e)}")
+                    click.echo(f"Error previewing files: {str(e)}")
+            elif choice == 3:
+                logging.info("Starting backup")
+                try:
+                    # Show all stories and let user select one
+                    story_id = _show_available_stories()
+                    if story_id:
+                        logging.info(
+                            f"Selected story ID for backup: {story_id}")
+                        ctx = click.get_current_context()
+                        ctx.invoke(backup, story_id=story_id,
+                                   output_dir='backups')
+                    else:
+                        logging.info("No story selected")
+                except Exception as e:
+                    logging.error(f"Error creating backup: {str(e)}")
+                    click.echo(f"Error creating backup: {str(e)}")
+            elif choice == 4:
+                logging.info("Starting restore")
+                try:
+                    # List available backups
+                    backup_dir = 'backups'
+                    if not os.path.exists(backup_dir):
+                        click.echo("No backups found.")
+                        continue
+
+                    backups = [f for f in os.listdir(
+                        backup_dir) if f.endswith('.zip')]
+                    if not backups:
+                        click.echo("No backup files found.")
+                        continue
+
+                    click.echo("\nAvailable backups:")
+                    for idx, backup in enumerate(backups, 1):
+                        backup_path = os.path.join(backup_dir, backup)
+                        size = os.path.getsize(backup_path) / 1024  # KB
+                        modified = datetime.fromtimestamp(
+                            os.path.getmtime(backup_path))
+                        click.echo(
+                            f"{idx}. {backup} ({size:.2f} KB) - {modified}")
+
+                    click.echo("\n0. Cancel")
+                    choice = click.prompt(
+                        "\nSelect a backup to restore", type=int, default=0)
+
+                    if choice == 0:
+                        continue
+                    if 1 <= choice <= len(backups):
+                        backup_path = os.path.join(
+                            backup_dir, backups[choice - 1])
+                        ctx = click.get_current_context()
+                        ctx.invoke(
+                            restore, backup_path=backup_path, force=False)
+                    else:
+                        click.echo("Invalid selection.")
+                except Exception as e:
+                    logging.error(f"Error restoring backup: {str(e)}")
+                    click.echo(f"Error restoring backup: {str(e)}")
+            else:
+                click.echo("Invalid option")
+        except Exception as e:
+            logging.error(f"An error occurred in file menu: {str(e)}")
+            click.echo(f"An error occurred: {str(e)}")
+
+        click.pause()
+
+
+def _show_main_menu():
+    """Show main menu."""
+    while True:
+        click.clear()
+        click.echo(show_banner())
+        click.echo("\nStory Pipeline Interactive Menu")
+        click.echo("=" * 30)
+        click.echo("\n1. Story Management")
+        click.echo("2. Video Creation")
+        click.echo("3. System Status")
+        click.echo("4. File Management")
+        click.echo("5. Settings")
+        click.echo("\n0. Exit")
+
+        choice = click.prompt("\nSelect an option", type=int, default=0)
+
+        if choice == 0:
+            break
+        elif choice == 1:
+            _show_story_menu()
+        elif choice == 2:
+            _show_video_menu()
+        elif choice == 3:
+            _show_status_menu()
+        elif choice == 4:
+            _show_file_menu()
+        elif choice == 5:
+            _show_settings_menu()
+        else:
+            click.echo("Invalid option")
+            click.pause()
+
+
 @cli.command()
 @click.option('--debug', is_flag=True, help='Enable debug logging')
 def menu(debug: bool):
@@ -387,29 +535,4 @@ def menu(debug: bool):
         except Exception as e:
             logging.error(f"Couldn't start background music: {str(e)}")
 
-    while True:
-        click.clear()
-        click.echo(show_banner())
-        click.echo("\nStory Pipeline Interactive Menu")
-        click.echo("=" * 30)
-        click.echo("\n1. Story Management")
-        click.echo("2. Video Creation")
-        click.echo("3. System Status")
-        click.echo("4. Settings")
-        click.echo("\n0. Exit")
-
-        choice = click.prompt("\nSelect an option", type=int, default=0)
-
-        if choice == 0:
-            break
-        elif choice == 1:
-            _show_story_menu()
-        elif choice == 2:
-            _show_video_menu()
-        elif choice == 3:
-            _show_status_menu()
-        elif choice == 4:
-            _show_settings_menu()
-        else:
-            click.echo("Invalid option")
-            click.pause()
+    _show_main_menu()

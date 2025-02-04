@@ -3,6 +3,8 @@ import click
 import logging
 from typing import Optional, List
 from tabulate import tabulate
+from datetime import datetime
+import json
 
 from ..db import DatabaseManager, Story, StoryStatus
 from ..story_pipeline import StoryPipeline
@@ -361,6 +363,422 @@ def remake_subtitles(story_id: str):
         except Exception as e:
             click.echo(f"❌ Failed to generate subtitles: {str(e)}")
             raise
+
+
+@cli.group()
+def files():
+    """File management commands."""
+    pass
+
+
+@files.command()
+@click.argument('story_id', required=False)
+@click.option('--all', 'verify_all', is_flag=True, help="Verify all stories")
+def verify(story_id: Optional[str], verify_all: bool):
+    """Verify file integrity and show detailed file information.
+
+    If no story_id is provided and --all is not set, shows a menu to select a story.
+    """
+    with get_db() as db:
+        stories = []
+        if verify_all:
+            stories = db.get_all_stories()
+        elif story_id:
+            story = db.get_story(story_id)
+            if not story:
+                click.echo(f"Story {story_id} not found.")
+                return
+            stories = [story]
+        else:
+            # Show menu to select story
+            story_id = _show_available_stories()
+            if not story_id:
+                return
+            story = db.get_story(story_id)
+            if story:
+                stories = [story]
+
+        if not stories:
+            click.echo("No stories to verify.")
+            return
+
+        for story in stories:
+            click.echo(f"\nVerifying story: {story.id}")
+            click.echo("=" * 50)
+            click.echo(f"Title: {story.title}")
+            click.echo(f"Status: {story.status}")
+
+            # Check TTS audio file
+            if story.audio_path:
+                if os.path.exists(story.audio_path):
+                    size = os.path.getsize(story.audio_path) / 1024  # KB
+                    modified = os.path.getmtime(story.audio_path)
+                    modified_time = datetime.fromtimestamp(
+                        modified).strftime('%Y-%m-%d %H:%M:%S')
+                    click.echo(f"\n📁 TTS Audio:")
+                    click.echo(f"  Path: {story.audio_path}")
+                    click.echo(f"  Size: {size:.2f} KB")
+                    click.echo(f"  Modified: {modified_time}")
+                else:
+                    click.echo(
+                        f"\n❌ TTS Audio file missing: {story.audio_path}")
+            else:
+                click.echo("\n⚠️ No TTS audio path in database")
+
+            # Check timestamps file
+            if story.timestamps_path:
+                if os.path.exists(story.timestamps_path):
+                    size = os.path.getsize(story.timestamps_path) / 1024  # KB
+                    modified = os.path.getmtime(story.timestamps_path)
+                    modified_time = datetime.fromtimestamp(
+                        modified).strftime('%Y-%m-%d %H:%M:%S')
+                    click.echo(f"\n📁 Timestamps:")
+                    click.echo(f"  Path: {story.timestamps_path}")
+                    click.echo(f"  Size: {size:.2f} KB")
+                    click.echo(f"  Modified: {modified_time}")
+                else:
+                    click.echo(
+                        f"\n❌ Timestamps file missing: {story.timestamps_path}")
+            else:
+                click.echo("\n⚠️ No timestamps path in database")
+
+            # Check video file
+            video_dir = os.path.join("demo", "videos", story.id)
+            video_path = os.path.join(video_dir, "final.mp4")
+            if os.path.exists(video_path):
+                size = os.path.getsize(video_path) / 1024 / 1024  # MB
+                modified = os.path.getmtime(video_path)
+                modified_time = datetime.fromtimestamp(
+                    modified).strftime('%Y-%m-%d %H:%M:%S')
+                click.echo(f"\n📁 Video:")
+                click.echo(f"  Path: {video_path}")
+                click.echo(f"  Size: {size:.2f} MB")
+                click.echo(f"  Modified: {modified_time}")
+            else:
+                click.echo("\n⚠️ No video file found")
+
+            # Status consistency check
+            has_audio = story.audio_path and os.path.exists(story.audio_path)
+            has_timestamps = story.timestamps_path and os.path.exists(
+                story.timestamps_path)
+            has_video = os.path.exists(video_path)
+
+            click.echo("\n🔍 Status Check:")
+            if story.status == StoryStatus.NEW and (has_audio or has_timestamps or has_video):
+                click.echo("  ⚠️ Status is NEW but files exist")
+            elif story.status == StoryStatus.AUDIO_GENERATED and not has_audio:
+                click.echo(
+                    "  ❌ Status is AUDIO_GENERATED but audio file missing")
+            elif story.status == StoryStatus.READY and (not has_audio or not has_timestamps):
+                click.echo("  ❌ Status is READY but required files missing")
+            elif story.status == StoryStatus.VIDEO_READY and not has_video:
+                click.echo("  ❌ Status is VIDEO_READY but video file missing")
+            elif story.status == StoryStatus.VIDEO_PROCESSING and has_video:
+                click.echo("  ⚠️ Status is VIDEO_PROCESSING but video exists")
+            else:
+                click.echo("  ✅ Status consistent with files")
+
+
+@files.command()
+@click.argument('story_id', required=False)
+@click.option('--file-type', type=click.Choice(['text', 'timestamps', 'all']), default='all',
+              help="Type of file to preview")
+def preview(story_id: Optional[str], file_type: str):
+    """Preview story files (text and timestamps).
+
+    If no story_id is provided, shows a menu to select a story.
+    """
+    with get_db() as db:
+        if not story_id:
+            story_id = _show_available_stories()
+            if not story_id:
+                return
+
+        story = db.get_story(story_id)
+        if not story:
+            click.echo(f"Story {story_id} not found.")
+            return
+
+        if file_type in ['text', 'all']:
+            click.echo("\n📝 Story Text:")
+            click.echo("=" * 50)
+            click.echo(story.text)
+
+        if file_type in ['timestamps', 'all'] and story.timestamps_path:
+            if os.path.exists(story.timestamps_path):
+                click.echo("\n⏱️ Timestamps:")
+                click.echo("=" * 50)
+                try:
+                    with open(story.timestamps_path, 'r', encoding='utf-8') as f:
+                        timestamps_data = json.load(f)
+
+                    if 'segments' in timestamps_data:  # Whisper format
+                        for segment in timestamps_data['segments']:
+                            start = segment.get('start', 0)
+                            end = segment.get('end', 0)
+                            text = segment.get('text', '').strip()
+                            click.echo(f"{start:.2f} → {end:.2f}: {text}")
+                    else:  # ElevenLabs format
+                        for segment in timestamps_data:
+                            if 'characters' in segment and 'character_start_times_seconds' in segment:
+                                chars = segment['characters']
+                                times = segment['character_start_times_seconds']
+                                text = ''.join(chars)
+                                start = times[0] if times else 0
+                                end = times[-1] if times else 0
+                                click.echo(f"{start:.2f} → {end:.2f}: {text}")
+                except json.JSONDecodeError:
+                    click.echo("❌ Invalid JSON format in timestamps file")
+                except Exception as e:
+                    click.echo(f"❌ Error reading timestamps: {str(e)}")
+            else:
+                click.echo("\n❌ Timestamps file not found")
+
+
+def _show_available_stories() -> Optional[str]:
+    """Show a menu of available stories and return the selected story ID."""
+    with get_db() as db:
+        stories = db.get_all_stories()
+        if not stories:
+            click.echo("No stories available.")
+            return None
+
+        click.echo("\nAvailable Stories")
+        click.echo("=" * 50 + "\n")
+
+        for i, story in enumerate(stories, 1):
+            title = story.title[:50] + \
+                "..." if len(story.title) > 50 else story.title
+            created = story.created_at.strftime('%Y-%m-%d %H:%M')
+            click.echo(f"{i}. {title}")
+            click.echo(f"   Status: {story.status}")
+            click.echo(f"   Author: {story.author}")
+            click.echo(f"   Created: {created}\n")
+
+        click.echo("0. Cancel\n")
+
+        while True:
+            try:
+                choice = click.prompt(
+                    "Select a story number", type=int, default=0)
+                if choice == 0:
+                    return None
+                if 1 <= choice <= len(stories):
+                    return stories[choice - 1].id
+                click.echo("Invalid choice. Please try again.")
+            except (ValueError, click.Abort):
+                return None
+
+
+@files.command()
+@click.argument('story_id', required=False)
+@click.option('--output-dir', default='backups', help="Directory to store backups")
+def backup(story_id: Optional[str], output_dir: str):
+    """Backup story files to a zip archive.
+
+    If no story_id is provided, shows a menu to select a story.
+    """
+    import tempfile
+    import zipfile
+    import shutil
+
+    with get_db() as db:
+        if not story_id:
+            story_id = _show_available_stories()
+            if not story_id:
+                return
+
+        story = db.get_story(story_id)
+        if not story:
+            click.echo(f"Story {story_id} not found.")
+            return
+
+        # Create backup directory
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        backup_name = f"{story.id}_{timestamp}"
+        backup_path = os.path.join(output_dir, f"{backup_name}.zip")
+        files_copied = []
+
+        try:
+            # Create temporary directory for files
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Copy story metadata
+                metadata_path = os.path.join(temp_dir, "story.json")
+                with open(metadata_path, 'w', encoding='utf-8') as f:
+                    json.dump({
+                        'id': story.id,
+                        'title': story.title,
+                        'author': story.author,
+                        'subreddit': story.subreddit,
+                        'url': story.url,
+                        'text': story.text,
+                        'created_at': story.created_at.isoformat(),
+                        'status': str(story.status)
+                    }, f, indent=2)
+                files_copied.append(('Story metadata', metadata_path))
+
+                # Copy TTS audio
+                if story.audio_path and os.path.exists(story.audio_path):
+                    audio_dest = os.path.join(temp_dir, "audio.mp3")
+                    shutil.copy2(story.audio_path, audio_dest)
+                    files_copied.append(('TTS Audio', story.audio_path))
+
+                # Copy timestamps
+                if story.timestamps_path and os.path.exists(story.timestamps_path):
+                    timestamps_dest = os.path.join(temp_dir, "timestamps.json")
+                    shutil.copy2(story.timestamps_path, timestamps_dest)
+                    files_copied.append(('Timestamps', story.timestamps_path))
+
+                # Copy video if exists
+                video_path = os.path.join(
+                    "demo", "videos", story.id, "final.mp4")
+                if os.path.exists(video_path):
+                    video_dest = os.path.join(temp_dir, "video.mp4")
+                    shutil.copy2(video_path, video_dest)
+                    files_copied.append(('Video', video_path))
+
+                if not files_copied:
+                    click.echo("⚠️ No files found to backup!")
+                    return
+
+                # Create zip archive
+                with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    for root, _, files in os.walk(temp_dir):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            arcname = os.path.relpath(file_path, temp_dir)
+                            zipf.write(file_path, arcname)
+
+            # Show summary
+            click.echo(f"\n✨ Created backup: {backup_path}")
+            click.echo("\nFiles included:")
+            for file_type, path in files_copied:
+                size = os.path.getsize(path) / 1024  # KB
+                click.echo(
+                    f"  • {file_type}: {os.path.basename(path)} ({size:.2f} KB)")
+
+        except Exception as e:
+            if backup_path and os.path.exists(backup_path):
+                try:
+                    # Clean up partial backup if it exists
+                    os.remove(backup_path)
+                except:
+                    pass
+            click.echo(f"❌ Error creating backup: {str(e)}")
+            raise
+
+
+@files.command()
+@click.argument('backup_path')
+@click.option('--force', is_flag=True, help="Overwrite existing files")
+def restore(backup_path: str, force: bool):
+    """Restore story files from a backup archive."""
+    if not os.path.exists(backup_path):
+        click.echo(f"Backup file not found: {backup_path}")
+        return
+
+    try:
+        import tempfile
+        import zipfile
+        import shutil
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Extract backup
+            with zipfile.ZipFile(backup_path, 'r') as zipf:
+                zipf.extractall(temp_dir)
+
+            # Read story metadata
+            metadata_path = os.path.join(temp_dir, "story.json")
+            if not os.path.exists(metadata_path):
+                click.echo("❌ Invalid backup: missing story metadata")
+                return
+
+            with open(metadata_path, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+
+            # Confirm restoration
+            click.echo("\nRestore the following story?")
+            click.echo(f"Title: {metadata['title']}")
+            click.echo(f"Author: {metadata['author']}")
+            click.echo(f"ID: {metadata['id']}")
+
+            if not force and not click.confirm("\nProceed with restore?"):
+                click.echo("Restore cancelled.")
+                return
+
+            # Restore files
+            story_id = metadata['id']
+            files_restored = []
+
+            # Restore TTS audio
+            audio_src = os.path.join(temp_dir, "audio.mp3")
+            if os.path.exists(audio_src):
+                audio_dest = os.path.join(
+                    "demo", "stories", story_id, "audio.mp3")
+                os.makedirs(os.path.dirname(audio_dest), exist_ok=True)
+                shutil.copy2(audio_src, audio_dest)
+                files_restored.append(('TTS Audio', audio_dest))
+
+            # Restore timestamps
+            timestamps_src = os.path.join(temp_dir, "timestamps.json")
+            if os.path.exists(timestamps_src):
+                timestamps_dest = os.path.join(
+                    "demo", "stories", story_id, "timestamps.json")
+                os.makedirs(os.path.dirname(timestamps_dest), exist_ok=True)
+                shutil.copy2(timestamps_src, timestamps_dest)
+                files_restored.append(('Timestamps', timestamps_dest))
+
+            # Restore video
+            video_src = os.path.join(temp_dir, "video.mp4")
+            if os.path.exists(video_src):
+                video_dest = os.path.join(
+                    "demo", "videos", story_id, "final.mp4")
+                os.makedirs(os.path.dirname(video_dest), exist_ok=True)
+                shutil.copy2(video_src, video_dest)
+                files_restored.append(('Video', video_dest))
+
+            # Update database
+            with get_db() as db:
+                story = Story(
+                    id=metadata['id'],
+                    title=metadata['title'],
+                    author=metadata['author'],
+                    subreddit=metadata['subreddit'],
+                    url=metadata['url'],
+                    text=metadata['text'],
+                    created_at=datetime.fromisoformat(metadata['created_at']),
+                    status=metadata['status'],
+                    audio_path=next(
+                        (dest for type_, dest in files_restored if type_ == 'TTS Audio'), None),
+                    timestamps_path=next(
+                        (dest for type_, dest in files_restored if type_ == 'Timestamps'), None),
+                    subtitles_path=next(
+                        (dest for type_, dest in files_restored if type_ == 'Video'), None)
+                )
+
+                existing_story = db.get_story(story_id)
+                if existing_story:
+                    if not force and not click.confirm(f"\nStory {story_id} already exists. Update it?"):
+                        click.echo("Database update skipped.")
+                    else:
+                        db.delete_story(story_id)
+                        db.add_story(story)
+                        click.echo("Updated existing story in database.")
+                else:
+                    db.add_story(story)
+                    click.echo("Added new story to database.")
+
+            # Show summary
+            click.echo("\n✨ Restore completed successfully")
+            click.echo("\nFiles restored:")
+            for file_type, path in files_restored:
+                size = os.path.getsize(path) / 1024  # KB
+                click.echo(f"  • {file_type}: {path} ({size:.2f} KB)")
+
+    except Exception as e:
+        click.echo(f"❌ Error restoring backup: {str(e)}")
+        raise
 
 
 if __name__ == '__main__':
