@@ -6,15 +6,31 @@ from ..db import Story, StoryStatus
 
 
 class VideoService:
-    def __init__(self, db_manager: DatabaseManager):
+    def __init__(self, db_manager: DatabaseManager) -> None:
+        """Initialize the video service.
+
+        Args:
+            db_manager: Database manager instance for story operations
+        """
         self.db_manager = db_manager
 
     def create_pipeline(self, config: Dict) -> VideoPipeline:
-        """Creates and configures a video pipeline instance."""
+        """Creates and configures a video pipeline instance.
+
+        Args:
+            config: Configuration dictionary for video pipeline settings
+
+        Returns:
+            VideoPipeline: Configured video pipeline instance
+        """
         return VideoPipeline(config)
 
     def get_pending_videos(self) -> List[Story]:
-        """Retrieves stories ready for video generation."""
+        """Retrieves stories ready for video generation.
+
+        Returns:
+            List[Story]: List of stories in READY status
+        """
         return self.db_manager.get_stories_by_status(StoryStatus.READY)
 
     def process_video(self, story_id: str, config: Dict) -> None:
@@ -26,6 +42,7 @@ class VideoService:
 
         Raises:
             ValueError: If story is not found
+            Exception: If video processing fails
         """
         story = self.db_manager.get_story(story_id)
         if not story:
@@ -75,6 +92,13 @@ class VideoService:
             raise
 
     def get_video_status(self, story_id: str) -> Optional[StoryStatus]:
-        """Gets the video processing status for a story."""
+        """Gets the video processing status for a story.
+
+        Args:
+            story_id: ID of the story to check
+
+        Returns:
+            Optional[StoryStatus]: Story's current status or None if story not found
+        """
         story = self.db_manager.get_story(story_id)
         return story.status if story else None

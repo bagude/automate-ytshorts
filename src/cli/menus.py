@@ -2,14 +2,15 @@ import click
 import logging
 from threading import Thread
 from playsound import playsound
-from typing import Optional
+from typing import Optional, List, Dict, Any, NoReturn
 import os
 from datetime import datetime
 
 from .commands import cli, list_stories, show, crawl, delete, retry, cleanup, create_video, retry_video, remake_video, remake_subtitles, verify, preview, backup, restore
 from .formatters import show_banner
 from .settings import get_music_enabled, set_music_enabled
-from ..db import StoryStatus
+from ..db import StoryStatus, Story
+from ..db.manager import DatabaseManager
 
 
 def play_background_music():
@@ -28,7 +29,13 @@ def play_background_music():
 
 def _show_available_stories(status: Optional[str] = None) -> Optional[str]:
     """Show available stories and let user select one.
-    Returns the selected story ID or None if cancelled."""
+
+    Args:
+        status (Optional[str]): Filter stories by this status if provided
+
+    Returns:
+        Optional[str]: Selected story ID or None if no selection made
+    """
     from .commands import get_db
     logging.info(
         f"Fetching stories with status: {status if status else 'all'}")
@@ -133,8 +140,12 @@ def _show_available_stories(status: Optional[str] = None) -> Optional[str]:
                 click.echo("Please enter a valid number.")
 
 
-def _handle_list_stories(status: Optional[str] = None):
-    """Handle story listing with optional status filter."""
+def _handle_list_stories(status: Optional[str] = None) -> None:
+    """Handle story listing with optional status filter.
+
+    Args:
+        status (Optional[str]): Filter stories by this status if provided
+    """
     ctx = click.get_current_context()
     try:
         if status:
@@ -218,8 +229,8 @@ def _show_story_menu():
         click.pause()
 
 
-def _show_video_menu():
-    """Show video creation submenu."""
+def _show_video_menu() -> None:
+    """Display and handle the video management menu."""
     while True:
         click.clear()
         click.echo("Video Creation")
@@ -374,8 +385,8 @@ def _show_settings_menu():
             click.pause()
 
 
-def _show_file_menu():
-    """Show file management submenu."""
+def _show_file_menu() -> None:
+    """Display and handle the file management menu."""
     while True:
         click.clear()
         click.echo("File Management")
@@ -487,8 +498,8 @@ def _show_file_menu():
         click.pause()
 
 
-def _show_main_menu():
-    """Show main menu."""
+def _show_main_menu() -> None:
+    """Display and handle the main application menu."""
     while True:
         click.clear()
         click.echo(show_banner())

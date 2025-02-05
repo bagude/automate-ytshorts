@@ -1,5 +1,6 @@
 import json
 import csv
+from typing import Dict, Any, Optional
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -7,8 +8,11 @@ from selenium.webdriver.common.by import By
 from selenium.common.exceptions import WebDriverException
 
 
-def setup_webdriver(headless=True) -> webdriver.Chrome:
+def setup_webdriver(headless: bool = True) -> webdriver.Chrome:
     """Set up the WebDriver with optional headless mode and user-agent spoofing.
+
+    Args:
+        headless (bool): Whether to run Chrome in headless mode
 
     Returns:
         webdriver.Chrome: The configured WebDriver instance
@@ -21,27 +25,25 @@ def setup_webdriver(headless=True) -> webdriver.Chrome:
     return webdriver.Chrome(options=chrome_options)
 
 
-def get_posts(feed, retries=3, timeout=10, single=False) -> dict:
-    """Get posts from a Reddit feed.
+def get_posts(feed: str, limit: int = 10) -> Dict[str, Dict[str, Any]]:
+    """Crawl Reddit posts from a specified feed.
 
     Args:
-        feed (str): The name of the Reddit feed to crawl
-        retries (int): The number of retries to attempt if the request fails
-        timeout (int): The timeout for the request in seconds
-        single (bool): If True, only return the first post
+        feed (str): The subreddit feed to crawl
+        limit (int): Maximum number of posts to retrieve
 
     Returns:
-        dict: A dictionary of posts with their metadata
+        Dict[str, Dict[str, Any]]: Dictionary of posts with their metadata
     """
     tries = 0
     success = False
     posts = {}  # Initialize posts dictionary outside try block
 
-    while tries <= retries and not success:
+    while tries <= limit and not success:
         driver = setup_webdriver()
         try:
             url = f"https://www.reddit.com/r/{feed}.json"
-            driver.set_page_load_timeout(timeout)
+            driver.set_page_load_timeout(10)
             driver.get(url)
             json_data = driver.find_element(By.TAG_NAME, 'pre').text
             response = json.loads(json_data)
@@ -49,8 +51,6 @@ def get_posts(feed, retries=3, timeout=10, single=False) -> dict:
             if response:
                 success = True
                 list_of_posts = response['data']['children']
-                if single and list_of_posts:  # If single mode, only process the first post
-                    list_of_posts = [list_of_posts[0]]
                 for post in list_of_posts:
                     data = post['data']
                     title = data['title']
@@ -88,15 +88,12 @@ def parse_text(text: str) -> str:
     return text
 
 
-def write_to_csv(posts: dict, filename: str):
+def write_to_csv(posts: Dict[str, Dict[str, Any]], filename: str) -> None:
     """Write post data to a CSV file.
 
     Args:
-        posts (dict): A dictionary of posts with their metadata
+        posts (Dict[str, Dict[str, Any]]): A dictionary of posts with their metadata
         filename (str): The name of the file to write to
-
-    Returns:
-        None
     """
     with open(filename, 'w', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
@@ -112,7 +109,7 @@ def write_to_csv(posts: dict, filename: str):
             ])
 
 
-def main():
+def main() -> None:
     """Main function to execute the Reddit crawling and CSV writing process."""
     feed = 'tifu'
     posts = get_posts(feed)

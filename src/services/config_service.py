@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 import os
 import json
 from pathlib import Path
@@ -56,8 +56,14 @@ class ConfigService:
         """Gets configuration for video pipeline."""
         return self.config['video_pipeline'].copy()
 
-    def update_config(self, section: str, key: str, value: any) -> None:
-        """Updates a specific configuration value."""
+    def update_config(self, section: str, key: str, value: Any) -> None:
+        """Update a configuration value.
+
+        Args:
+            section: Configuration section name
+            key: Configuration key
+            value: New value to set
+        """
         if section not in self.config:
             self.config[section] = {}
         self.config[section][key] = value

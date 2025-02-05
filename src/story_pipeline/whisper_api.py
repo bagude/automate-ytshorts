@@ -2,7 +2,8 @@ import json
 import whisper
 import logging
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, Union, Any
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -54,29 +55,39 @@ def load_whisper_model(model_name: str = "base") -> whisper.Whisper:
 
 
 def transcribe_audio(
-    audio_path: str,
-    model: Optional[whisper.Whisper] = None,
-    model_name: str = "base",
-    json_folder: str = "demo/json",
-    verbose: bool = True,
-    fp16: bool = False
-) -> Dict:
-    """Transcribe audio file using Whisper model.
+    audio_path: Union[str, Path],
+    model: str = "base",
+    verbose: bool = False,
+    temperature: float = 0,
+    compression_ratio_threshold: float = 2.4,
+    logprob_threshold: float = -1.0,
+    no_speech_threshold: float = 0.6,
+    condition_on_previous_text: bool = True,
+    initial_prompt: Optional[str] = None,
+    word_timestamps: bool = False,
+    prepend_punctuations: str = "'\"({[",
+    append_punctuations: str = "'\",.!?:)}]",
+    fp16: bool = True
+) -> Dict[str, Any]:
+    """Transcribe audio using Whisper API.
 
     Args:
-        audio_path (str): Path to the audio file to transcribe
-        model (Optional[whisper.Whisper]): Pre-loaded Whisper model. If None, will load model_name
-        model_name (str): Name of the Whisper model to load if model not provided
-        json_folder (str): Folder to save JSON output. Defaults to "demo/json"
-        verbose (bool): Whether to show verbose output
-        fp16 (bool): Whether to use FP16 (half-precision). Default False for CPU usage
+        audio_path: Path to the audio file
+        model: Whisper model to use
+        verbose: Whether to print debug information
+        temperature: Temperature for sampling
+        compression_ratio_threshold: Compression ratio threshold
+        logprob_threshold: Log probability threshold
+        no_speech_threshold: No speech threshold
+        condition_on_previous_text: Whether to condition on previous text
+        initial_prompt: Initial prompt for transcription
+        word_timestamps: Whether to include word timestamps
+        prepend_punctuations: Punctuations to prepend
+        append_punctuations: Punctuations to append
+        fp16: Whether to use FP16
 
     Returns:
-        Dict: Transcription result containing text and metadata
-
-    Raises:
-        FileNotFoundError: If audio file doesn't exist
-        RuntimeError: If transcription fails
+        Dict[str, Any]: Transcription result containing text and metadata
     """
     try:
         if not os.path.exists(audio_path):
@@ -109,7 +120,7 @@ def transcribe_audio(
         raise RuntimeError(f"Transcription failed: {str(e)}")
 
 
-def main():
+def main() -> None:
     """Entry point for the Whisper API transcription script."""
     try:
         # Example usage

@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, NoReturn
 from ..db import DatabaseManager, Story
 from ..db.constants import StoryStatus
 from .video_pipeline import VideoPipeline, DEFAULT_CONFIG
@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO,
 class VideoManager:
     """Manages video creation for stories using VideoPipeline."""
 
-    def __init__(self, db_manager: DatabaseManager, video_config: Optional[Dict] = None):
+    def __init__(self, db_manager: DatabaseManager, video_config: Optional[Dict] = None) -> None:
         """Initialize the video manager.
 
         Args:
@@ -55,6 +55,10 @@ class VideoManager:
         Args:
             story: Story object to create video for
             output_path: Optional custom output path for the video
+
+        Raises:
+            ValueError: If story is not ready for video creation or missing required files
+            Exception: If video creation fails
         """
         if story.status not in StoryStatus.get_video_ready_statuses():
             raise ValueError(
@@ -122,6 +126,9 @@ class VideoManager:
 
         Args:
             story_id: ID of the story to retry
+
+        Raises:
+            ValueError: If story is not found or not in a failed video state
         """
         story = self.db_manager.get_story(story_id)
         if not story:
