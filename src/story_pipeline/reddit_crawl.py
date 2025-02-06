@@ -25,12 +25,13 @@ def setup_webdriver(headless: bool = True) -> webdriver.Chrome:
     return webdriver.Chrome(options=chrome_options)
 
 
-def get_posts(feed: str, limit: int = 10) -> Dict[str, Dict[str, Any]]:
+def get_posts(feed: str, limit: int = 10, single: bool = False) -> Dict[str, Dict[str, Any]]:
     """Crawl Reddit posts from a specified feed.
 
     Args:
         feed (str): The subreddit feed to crawl
         limit (int): Maximum number of posts to retrieve
+        single (bool): If True, only return the first post
 
     Returns:
         Dict[str, Dict[str, Any]]: Dictionary of posts with their metadata
@@ -51,6 +52,11 @@ def get_posts(feed: str, limit: int = 10) -> Dict[str, Dict[str, Any]]:
             if response:
                 success = True
                 list_of_posts = response['data']['children']
+
+                # If single is True, only process the first post
+                if single and list_of_posts:
+                    list_of_posts = [list_of_posts[0]]
+
                 for post in list_of_posts:
                     data = post['data']
                     title = data['title']
