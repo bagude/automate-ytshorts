@@ -640,6 +640,7 @@ class SubtitleEngine:
         self.stroke_color = config.get('stroke_color', 'black')
         self.stroke_width = config.get('stroke_width', 2)
         self.resolution = config.get('vertical_resolution', (1080, 1920))
+        self.subtitle_position = config.get('subtitle_position', ('center', 0.85))
 
     def _effect_subtitles(self, subtitles: SubtitlesClip) -> SubtitlesClip:
         # Add a fade in and fade out effect to the subtitles
@@ -682,7 +683,7 @@ class SubtitleEngine:
                 )
 
                 subtitles = subtitles.with_position(
-                    ("center", 0.70), relative=True)
+                    self.subtitle_position, relative=True)
 
                 return self._effect_subtitles(subtitles)
 
@@ -691,7 +692,27 @@ class SubtitleEngine:
                     "Error generating subtitles from JSON: %s", str(e))
                 raise
         else:
-            return SubtitlesClip([], make_textclip=text_clip_generator, encoding='utf-8')
+            cleaned_text = text.strip()
+            if not cleaned_text:
+                return SubtitlesClip(
+                    [],
+                    make_textclip=text_clip_generator,
+                    encoding='utf-8'
+                )
+
+            if duration <= 0:
+                raise ValueError("Duration must be positive to generate subtitles")
+
+            subtitles = SubtitlesClip(
+                [((0, duration), cleaned_text)],
+                make_textclip=text_clip_generator,
+                encoding='utf-8'
+            )
+
+            subtitles = subtitles.with_position(
+                self.subtitle_position, relative=True)
+
+            return self._effect_subtitles(subtitles)
 
 
 class VideoCompositor:
