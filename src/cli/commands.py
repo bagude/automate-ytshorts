@@ -1,15 +1,57 @@
 import os
-import click
-import logging
-from typing import Optional, List
-from tabulate import tabulate
-from datetime import datetime
 import json
+import logging
+from datetime import datetime
+from typing import List, Optional
+
+import click
+from rich import box
+from rich.align import Align
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Confirm, IntPrompt
+from rich.table import Table
+from rich.text import Text
 
 from ..db import DatabaseManager, Story, StoryStatus
 from ..story_pipeline import StoryPipeline
 from ..video_pipeline import VideoManager
-from .formatters import format_story_row
+
+
+console = Console()
+
+
+def _status_style(status: StoryStatus) -> str:
+    """Return a rich style string for a given story status."""
+    palette = {
+        StoryStatus.NEW: "bold blue",
+        StoryStatus.AUDIO_GENERATED: "bold green",
+        StoryStatus.READY: "bold cyan",
+        StoryStatus.VIDEO_PROCESSING: "bold yellow",
+        StoryStatus.VIDEO_READY: "bold magenta",
+        StoryStatus.VIDEO_ERROR: "bold red",
+        StoryStatus.ERROR: "bold red",
+    }
+    return palette.get(status, "bold white")
+
+
+def _format_timestamp(value: datetime) -> str:
+    """Format a datetime value for display."""
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M")
+    return str(value)
+
+
+def _render_filters(filters: List[str]) -> None:
+    """Render a subtle filters badge beneath tables."""
+    if not filters:
+        return
+
+    badge = Text("Filters:", style="bold dim")
+    for item in filters:
+        badge.append(" ")
+        badge.append(f"[{item}]", style="bold white")
+    console.print(Align.center(badge))
 
 
 def get_db() -> DatabaseManager:
@@ -31,7 +73,8 @@ def get_db() -> DatabaseManager:
 @click.group()
 def cli():
     """Story Pipeline CLI - Manage Reddit stories and their processing."""
-    pass
+    console.print(Align.center(Text("Automate YT Shorts", style="bold cyan")))
+    console.print(Align.center(Text("Story Pipeline CLI", style="dim")))
 
 
 @cli.command()
@@ -50,11 +93,20 @@ def crawl(subreddit: str, base_dir: str, model: str, single: bool):
     }
 
     pipeline = StoryPipeline(config)
-    pipeline.run()
-    if single:
-        click.echo(f"Completed processing first story from r/{subreddit}")
-    else:
-        click.echo(f"Completed processing stories from r/{subreddit}")
+    with console.status("Running story pipeline...", spinner="dots"):
+        pipeline.run()
+    message = (
+        f"Completed processing first story from r/{subreddit}"
+        if single
+        else f"Completed processing stories from r/{subreddit}"
+    )
+    console.print(
+        Panel.fit(
+            message,
+            border_style="green",
+            title="Crawl Complete",
+        )
+    )
 
 
 @cli.command(name='list')
@@ -73,30 +125,87 @@ def list_stories(status: Optional[str], limit: int, no_errors: bool):
             except ValueError as e:
                 logging.error(
                     f"Invalid status value: {status}, error: {str(e)}")
-                click.echo(f"Invalid status: {status}")
-                click.echo(
-                    f"Valid statuses are: {', '.join(s.value for s in StoryStatus)}")
+                console.print(
+                    Panel.fit(
+                        f"'{status}' is not a valid status.",
+                        title="Invalid Filter",
+                        border_style="red",
+                    )
+                )
+                console.print(
+                    Align.center(
+                        Text(
+                            "Valid options: "
+                            + ", ".join(s.value for s in StoryStatus),
+                            style="dim",
+                        )
+                    )
+                )
                 return
         else:
             stories = db.get_all_stories()[:limit]
 
         if not stories:
-            click.echo("No stories found.")
+            console.print(
+                Panel.fit(
+                    "No stories found for the selected filters.",
+                    border_style="yellow",
+                    title="Story Pipeline",
+                )
+            )
             return
 
-        headers = ["ID", "Title", "Author", "Status", "Created", "Error"]
-        rows = [format_story_row(story) for story in stories]
+        table = Table(
+            title="Stories",
+            box=box.MINIMAL_DOUBLE_HEAD,
+            header_style="bold cyan",
+            show_lines=True,
+        )
+        table.add_column("ID", style="magenta")
+        table.add_column("Title", style="bold white", overflow="fold")
+        table.add_column("Author", style="green")
+        table.add_column("Status", style="bold")
+        table.add_column("Created", style="cyan")
+        table.add_column("Error", style="red", overflow="fold")
 
-        click.echo(tabulate(rows, headers=headers, tablefmt="grid"))
+        for story in stories:
+            truncated_id = story.id[:8] + "…" if len(story.id) > 8 else story.id
+            title = story.title if len(story.title) <= 60 else story.title[:57] + "…"
+            status_style = _status_style(story.status)
+            status_value = (
+                story.status.value if isinstance(story.status, StoryStatus)
+                else str(story.status)
+            )
+            error_message = "—"
+            if story.error and not no_errors:
+                error_message = (
+                    story.error[:70] + "…" if len(story.error) > 70 else story.error
+                )
+            elif story.error and no_errors:
+                error_message = Text("hidden", style="dim")
 
-        # Add summary of filters applied
+            table.add_row(
+                truncated_id,
+                title,
+                story.author or "—",
+                f"[{status_style}]{status_value}[/]",
+                _format_timestamp(story.created_at),
+                error_message,
+            )
+
+        console.print(table)
+
         filters = []
         if status:
-            filters.append(f"status='{status}'")
+            filters.append(f"status={status}")
         if no_errors:
-            filters.append("no-errors")
-        filter_text = f" (filtered by {', '.join(filters)})" if filters else ""
-        click.echo(f"\nShowing {len(stories)} stories{filter_text}")
+            filters.append("errors=hidden")
+        _render_filters(filters)
+        console.print(
+            Align.center(
+                Text(f"Showing {len(stories)} stories", style="dim")
+            )
+        )
 
 
 @cli.command()
@@ -106,26 +215,68 @@ def show(story_id: str):
     with get_db() as db:
         story = db.get_story(story_id)
         if not story:
-            click.echo(f"Story {story_id} not found.")
+            console.print(
+                Panel.fit(
+                    f"Story '{story_id}' was not found.",
+                    title="Missing Story",
+                    border_style="red",
+                )
+            )
             return
 
-        click.echo("\nStory Details:")
-        click.echo("=" * 50)
-        click.echo(f"ID:        {story.id}")
-        click.echo(f"Title:     {story.title}")
-        click.echo(f"Author:    {story.author}")
-        click.echo(f"Subreddit: r/{story.subreddit}")
-        click.echo(f"Status:    {story.status}")
-        click.echo(f"Created:   {story.created_at}")
-        click.echo("\nPaths:")
-        click.echo(f"Audio:      {story.audio_path or 'Not generated'}")
-        click.echo(f"Timestamps: {story.timestamps_path or 'Not generated'}")
-        click.echo(f"Subtitles:  {story.subtitles_path or 'Not generated'}")
+        header = Text(story.title, style="bold white")
+        subheader = Text(
+            f"u/{story.author} • r/{story.subreddit}", style="dim"
+        )
+        console.print(Align.center(header))
+        console.print(Align.center(subheader))
+
+        details = Table.grid(padding=(0, 2))
+        details.add_column(justify="right", style="bold cyan")
+        details.add_column(style="white", overflow="fold")
+        details.add_row("ID", story.id)
+        status_value = (
+            story.status.value if isinstance(story.status, StoryStatus)
+            else str(story.status)
+        )
+        details.add_row(
+            "Status",
+            f"[{_status_style(story.status)}]{status_value}[/]",
+        )
+        details.add_row("Created", _format_timestamp(story.created_at))
+
+        paths = Table.grid(padding=(0, 2))
+        paths.add_column(justify="right", style="bold cyan")
+        paths.add_column(style="white", overflow="fold")
+        paths.add_row("Audio", story.audio_path or "Not generated")
+        paths.add_row("Timestamps", story.timestamps_path or "Not generated")
+        paths.add_row("Subtitles", story.subtitles_path or "Not generated")
+
+        console.print(
+            Panel.fit(details, title="Story Details", border_style="cyan")
+        )
+        console.print(
+            Panel.fit(paths, title="Asset Paths", border_style="magenta")
+        )
+
         if story.error:
-            click.echo(f"\nError:\n{story.error}")
-        click.echo("\nText:")
-        click.echo("-" * 50)
-        click.echo(story.text)
+            console.print(
+                Panel(
+                    story.error,
+                    title="Error",
+                    border_style="red",
+                    padding=(1, 2),
+                )
+            )
+
+        console.print(
+            Panel(
+                story.text,
+                title="Story Text",
+                border_style="green",
+                padding=(1, 2),
+            )
+        )
 
 
 @cli.command()
@@ -133,17 +284,33 @@ def show(story_id: str):
 @click.option('--force', is_flag=True, help="Force deletion without confirmation")
 def delete(story_id: str, force: bool):
     """Delete a story and its associated files."""
-    if not force and not click.confirm(f"Are you sure you want to delete story {story_id}?"):
-        return
+    if not force:
+        if not Confirm.ask(
+            f"Delete story [bold]{story_id}[/]?", default=False
+        ):
+            console.print(Align.center(Text("Deletion cancelled.", style="dim")))
+            return
 
     with get_db() as db:
         story = db.get_story(story_id)
         if not story:
-            click.echo(f"Story {story_id} not found.")
+            console.print(
+                Panel.fit(
+                    f"Story '{story_id}' was not found.",
+                    title="Missing Story",
+                    border_style="red",
+                )
+            )
             return
 
         db.delete_story(story_id)
-        click.echo(f"Deleted story {story_id}")
+        console.print(
+            Panel.fit(
+                f"Story '{story_id}' deleted.",
+                title="Removed",
+                border_style="green",
+            )
+        )
 
 
 @cli.command()
@@ -153,17 +320,35 @@ def retry(story_id: str):
     with get_db() as db:
         story = db.get_story(story_id)
         if not story:
-            click.echo(f"Story {story_id} not found.")
+            console.print(
+                Panel.fit(
+                    f"Story '{story_id}' was not found.",
+                    title="Missing Story",
+                    border_style="red",
+                )
+            )
             return
 
         if story.status != StoryStatus.ERROR:
-            click.echo(
-                f"Story {story_id} is not in error state (current status: {story.status})")
+            console.print(
+                Panel.fit(
+                    f"Story '{story_id}' is not in an error state.\n"
+                    f"Current status: {story.status.value if isinstance(story.status, StoryStatus) else story.status}",
+                    border_style="yellow",
+                    title="Cannot Retry",
+                )
+            )
             return
 
         # Reset story status
         db.update_story_status(story_id, StoryStatus.NEW, None)
-        click.echo(f"Reset story {story_id} for reprocessing")
+        console.print(
+            Panel.fit(
+                f"Story '{story_id}' reset for reprocessing.",
+                border_style="cyan",
+                title="Status Reset",
+            )
+        )
 
         # Create pipeline config
         config = {
@@ -175,9 +360,17 @@ def retry(story_id: str):
 
         # Run pipeline for this story
         pipeline = StoryPipeline(config)
-        pipeline.tts_processor.process([story_id])
-        pipeline.subtitle_generator.process([story_id])
-        click.echo(f"Completed reprocessing story {story_id}")
+        with console.status("Regenerating assets...", spinner="dots"):
+            pipeline.tts_processor.process([story_id])
+            pipeline.subtitle_generator.process([story_id])
+
+        console.print(
+            Panel.fit(
+                f"Completed reprocessing for story '{story_id}'.",
+                border_style="green",
+                title="Success",
+            )
+        )
 
 
 @cli.command()
@@ -187,17 +380,34 @@ def cleanup():
         # Get all error stories
         error_stories = db.get_stories_by_status(StoryStatus.ERROR)
         if not error_stories:
-            click.echo("No failed stories found.")
+            console.print(
+                Panel.fit(
+                    "No failed stories found.",
+                    border_style="green",
+                    title="Cleanup",
+                )
+            )
             return
 
-        if not click.confirm(f"Found {len(error_stories)} failed stories. Delete them?"):
+        if not Confirm.ask(
+            f"Delete {len(error_stories)} failed stories?", default=False
+        ):
+            console.print(Align.center(Text("Cleanup cancelled.", style="dim")))
             return
 
         for story in error_stories:
             db.delete_story(story.id)
-            click.echo(f"Deleted failed story {story.id}")
+            console.print(
+                f"[bold red]✖[/] Removed failed story [white]{story.id}[/]"
+            )
 
-        click.echo(f"\nDeleted {len(error_stories)} failed stories")
+        console.print(
+            Panel.fit(
+                f"Deleted {len(error_stories)} failed stories.",
+                border_style="green",
+                title="Cleanup Complete",
+            )
+        )
 
 
 @cli.command()
@@ -206,31 +416,79 @@ def cleanup():
 def create_video(story_id: Optional[str], process_all: bool):
     """Create videos for stories that are ready."""
     if not story_id and not process_all:
-        click.echo("Please specify either --story-id or --all")
+        console.print(
+            Panel.fit(
+                "Please specify either --story-id or --all.",
+                border_style="red",
+                title="Missing Arguments",
+            )
+        )
         return
 
     with get_db() as db:
         video_manager = VideoManager(db)
 
         if process_all:
-            click.echo("Processing all ready stories...")
-            video_manager.process_ready_stories()
+            with console.status(
+                "Processing all video-ready stories...", spinner="dots"
+            ):
+                video_manager.process_ready_stories()
+            console.print(
+                Panel.fit(
+                    "Processed all ready stories.",
+                    border_style="green",
+                    title="Video Manager",
+                )
+            )
         else:
             story = db.get_story(story_id)
             if not story:
-                click.echo(f"Story {story_id} not found.")
+                console.print(
+                    Panel.fit(
+                        f"Story '{story_id}' was not found.",
+                        title="Missing Story",
+                        border_style="red",
+                    )
+                )
                 return
 
-            click.echo(f"Creating video for story {story_id}")
-            click.echo(f"Story status: {story.status}")
-            click.echo(f"Audio path: {story.audio_path}")
-            click.echo(f"Timestamps path: {story.timestamps_path}")
+            summary = Table.grid(padding=(0, 2))
+            summary.add_column(justify="right", style="bold cyan")
+            summary.add_column(style="white", overflow="fold")
+            summary.add_row("Title", story.title)
+            summary.add_row(
+                "Status",
+                f"[{_status_style(story.status)}]{story.status.value if isinstance(story.status, StoryStatus) else story.status}[/]",
+            )
+            summary.add_row("Audio", story.audio_path or "—")
+            summary.add_row("Timestamps", story.timestamps_path or "—")
+
+            console.print(
+                Panel.fit(
+                    summary,
+                    title=f"Story {story_id}",
+                    border_style="cyan",
+                )
+            )
 
             try:
-                video_manager.create_video_for_story(story)
-                click.echo(f"Successfully created video for story {story_id}")
+                with console.status("Rendering video...", spinner="dots"):
+                    video_manager.create_video_for_story(story)
+                console.print(
+                    Panel.fit(
+                        f"Successfully created video for story '{story_id}'.",
+                        border_style="green",
+                        title="Video Complete",
+                    )
+                )
             except Exception as e:
-                click.echo(f"Failed to create video: {str(e)}")
+                console.print(
+                    Panel.fit(
+                        f"Failed to create video: {str(e)}",
+                        border_style="red",
+                        title="Video Error",
+                    )
+                )
                 raise
 
 
@@ -241,11 +499,23 @@ def retry_video(story_id: str):
     with get_db() as db:
         video_manager = VideoManager(db)
         try:
-            video_manager.retry_failed_video(story_id)
-            click.echo(
-                f"Successfully retried video creation for story {story_id}")
+            with console.status("Retrying video creation...", spinner="dots"):
+                video_manager.retry_failed_video(story_id)
+            console.print(
+                Panel.fit(
+                    f"Successfully retried video creation for story '{story_id}'.",
+                    border_style="green",
+                    title="Video Complete",
+                )
+            )
         except Exception as e:
-            click.echo(f"Failed to retry video creation: {str(e)}")
+            console.print(
+                Panel.fit(
+                    f"Failed to retry video creation: {str(e)}",
+                    border_style="red",
+                    title="Video Error",
+                )
+            )
 
 
 @cli.command()
@@ -263,19 +533,39 @@ def reset(keep_files: bool, force: bool):
             warning += " and remove all generated files"
         warning += ".\nThis action cannot be undone!"
 
-        if not click.confirm(f"\n{warning}\n\nAre you absolutely sure you want to continue?"):
-            click.echo("Operation cancelled.")
+        console.print(
+            Panel(
+                warning,
+                border_style="red",
+                title="Danger Zone",
+                padding=(1, 2),
+            )
+        )
+        if not Confirm.ask("Proceed with reset?", default=False):
+            console.print(Align.center(Text("Reset cancelled.", style="dim")))
             return
 
     try:
         with get_db() as db:
-            click.echo("Starting database reset...")
-            db.cleanup_database(remove_files=not keep_files)
-            click.echo("✨ Database has been reset to factory settings.")
+            with console.status("Resetting database...", spinner="dots"):
+                db.cleanup_database(remove_files=not keep_files)
+            console.print(
+                Panel.fit(
+                    "Database has been reset to factory settings.",
+                    border_style="green",
+                    title="Reset Complete",
+                )
+            )
             if not keep_files:
-                click.echo("📂 All generated files have been removed.")
+                console.print("[dim]All generated files were removed.[/]")
     except Exception as e:
-        click.echo(f"❌ Error during reset: {str(e)}")
+        console.print(
+            Panel.fit(
+                f"Error during reset: {str(e)}",
+                border_style="red",
+                title="Reset Failed",
+            )
+        )
         raise
 
 
@@ -289,14 +579,30 @@ def remake_video(story_id: str):
     with get_db() as db:
         story = db.get_story(story_id)
         if not story:
-            click.echo(f"Story {story_id} not found.")
+            console.print(
+                Panel.fit(
+                    f"Story '{story_id}' was not found.",
+                    title="Missing Story",
+                    border_style="red",
+                )
+            )
             return
 
         if not story.audio_path or not story.timestamps_path:
-            click.echo(f"Story {story_id} is missing required files:")
-            click.echo(f"Audio path: {'✓' if story.audio_path else '✗'}")
-            click.echo(
-                f"Timestamps path: {'✓' if story.timestamps_path else '✗'}")
+            status_table = Table.grid(padding=(0, 2))
+            status_table.add_column(justify="right", style="bold cyan")
+            status_table.add_column(style="white")
+            status_table.add_row("Audio", "✅" if story.audio_path else "❌")
+            status_table.add_row(
+                "Timestamps", "✅" if story.timestamps_path else "❌"
+            )
+            console.print(
+                Panel.fit(
+                    status_table,
+                    title="Missing Files",
+                    border_style="yellow",
+                )
+            )
             return
 
         try:
@@ -307,20 +613,32 @@ def remake_video(story_id: str):
             os.makedirs(output_dir, exist_ok=True)
             output_path = os.path.join(output_dir, "final.mp4")
 
-            click.echo("Starting video creation...")
-            with VideoPipeline(DEFAULT_CONFIG) as pipeline:
-                pipeline.execute(
-                    output_path=output_path,
-                    tts_path=story.audio_path,
-                    music_path=os.path.join("demo", "mp3", "bg_music.mp3"),
-                    video_path=os.path.join("demo", "mp4", "background.mp4"),
-                    text=story.text,
-                    subtitle_json=story.timestamps_path
+            with console.status("Rendering video...", spinner="dots"):
+                with VideoPipeline(DEFAULT_CONFIG) as pipeline:
+                    pipeline.execute(
+                        output_path=output_path,
+                        tts_path=story.audio_path,
+                        music_path=os.path.join("demo", "mp3", "bg_music.mp3"),
+                        video_path=os.path.join("demo", "mp4", "background.mp4"),
+                        text=story.text,
+                        subtitle_json=story.timestamps_path
+                    )
+            console.print(
+                Panel.fit(
+                    f"Successfully created video: {output_path}",
+                    border_style="green",
+                    title="Video Complete",
                 )
-            click.echo(f"✨ Successfully created video: {output_path}")
+            )
 
         except Exception as e:
-            click.echo(f"❌ Failed to create video: {str(e)}")
+            console.print(
+                Panel.fit(
+                    f"Failed to create video: {str(e)}",
+                    border_style="red",
+                    title="Video Error",
+                )
+            )
             raise
 
 
@@ -334,34 +652,64 @@ def remake_subtitles(story_id: str):
     with get_db() as db:
         story = db.get_story(story_id)
         if not story:
-            click.echo(f"Story {story_id} not found.")
+            console.print(
+                Panel.fit(
+                    f"Story '{story_id}' was not found.",
+                    title="Missing Story",
+                    border_style="red",
+                )
+            )
             return
 
         if not story.audio_path or not story.timestamps_path:
-            click.echo(f"Story {story_id} is missing required files:")
-            click.echo(f"Audio path: {'✓' if story.audio_path else '✗'}")
-            click.echo(
-                f"Timestamps path: {'✓' if story.timestamps_path else '✗'}")
+            status_table = Table.grid(padding=(0, 2))
+            status_table.add_column(justify="right", style="bold cyan")
+            status_table.add_column(style="white")
+            status_table.add_row("Audio", "✅" if story.audio_path else "❌")
+            status_table.add_row(
+                "Timestamps", "✅" if story.timestamps_path else "❌"
+            )
+            console.print(
+                Panel.fit(
+                    status_table,
+                    title="Missing Files",
+                    border_style="yellow",
+                )
+            )
             return
 
         try:
             from ..video_pipeline.video_pipeline import SubtitleEngine, DEFAULT_CONFIG
 
-            click.echo("Starting subtitle generation...")
-            subtitle_engine = SubtitleEngine(DEFAULT_CONFIG)
-            subtitles = subtitle_engine.generate_subtitles(
-                text=story.text,
-                duration=60,  # This duration doesn't matter for subtitle generation from timestamps
-                subtitle_json=story.timestamps_path
+            with console.status("Regenerating subtitles...", spinner="dots"):
+                subtitle_engine = SubtitleEngine(DEFAULT_CONFIG)
+                subtitle_engine.generate_subtitles(
+                    text=story.text,
+                    duration=60,
+                    subtitle_json=story.timestamps_path
+                )
+            console.print(
+                Panel.fit(
+                    "Successfully regenerated subtitles.",
+                    border_style="green",
+                    title="Subtitles Complete",
+                )
             )
-            click.echo("✨ Successfully regenerated subtitles")
 
-            if click.confirm("Would you like to remake the video with the new subtitles?"):
+            if Confirm.ask(
+                "Remake the video with the new subtitles?", default=False
+            ):
                 ctx = click.get_current_context()
                 ctx.invoke(remake_video, story_id=story_id)
 
         except Exception as e:
-            click.echo(f"❌ Failed to generate subtitles: {str(e)}")
+            console.print(
+                Panel.fit(
+                    f"Failed to generate subtitles: {str(e)}",
+                    border_style="red",
+                    title="Subtitle Error",
+                )
+            )
             raise
 
 
@@ -386,7 +734,13 @@ def verify(story_id: Optional[str], verify_all: bool):
         elif story_id:
             story = db.get_story(story_id)
             if not story:
-                click.echo(f"Story {story_id} not found.")
+                console.print(
+                    Panel.fit(
+                        f"Story '{story_id}' was not found.",
+                        title="Missing Story",
+                        border_style="red",
+                    )
+                )
                 return
             stories = [story]
         else:
@@ -399,84 +753,126 @@ def verify(story_id: Optional[str], verify_all: bool):
                 stories = [story]
 
         if not stories:
-            click.echo("No stories to verify.")
+            console.print(
+                Panel.fit(
+                    "No stories to verify.",
+                    border_style="yellow",
+                    title="Verification",
+                )
+            )
             return
 
         for story in stories:
-            click.echo(f"\nVerifying story: {story.id}")
-            click.echo("=" * 50)
-            click.echo(f"Title: {story.title}")
-            click.echo(f"Status: {story.status}")
+            console.rule(Text(f"Story {story.id}", style="bold magenta"))
+            header = Table.grid(padding=(0, 2))
+            header.add_column(justify="right", style="bold cyan")
+            header.add_column(style="white", overflow="fold")
+            header.add_row("Title", story.title)
+            header.add_row(
+                "Status",
+                f"[{_status_style(story.status)}]{story.status.value if isinstance(story.status, StoryStatus) else story.status}[/]",
+            )
+            header.add_row("Author", f"u/{story.author}")
+            header.add_row("Created", _format_timestamp(story.created_at))
+            console.print(Panel.fit(header, border_style="cyan"))
 
             # Check TTS audio file
-            if story.audio_path:
-                if os.path.exists(story.audio_path):
-                    size = os.path.getsize(story.audio_path) / 1024  # KB
-                    modified = os.path.getmtime(story.audio_path)
-                    modified_time = datetime.fromtimestamp(
-                        modified).strftime('%Y-%m-%d %H:%M:%S')
-                    click.echo(f"\n📁 TTS Audio:")
-                    click.echo(f"  Path: {story.audio_path}")
-                    click.echo(f"  Size: {size:.2f} KB")
-                    click.echo(f"  Modified: {modified_time}")
-                else:
-                    click.echo(
-                        f"\n❌ TTS Audio file missing: {story.audio_path}")
-            else:
-                click.echo("\n⚠️ No TTS audio path in database")
+            asset_table = Table(
+                title="Assets",
+                box=box.SIMPLE_HEAVY,
+                header_style="bold cyan",
+                show_lines=True,
+            )
+            asset_table.add_column("Asset", style="bold")
+            asset_table.add_column("Status", style="white")
+            asset_table.add_column("Path", style="dim", overflow="fold")
+            asset_table.add_column("Size", justify="right")
+            asset_table.add_column("Modified", justify="right")
 
-            # Check timestamps file
-            if story.timestamps_path:
-                if os.path.exists(story.timestamps_path):
-                    size = os.path.getsize(story.timestamps_path) / 1024  # KB
-                    modified = os.path.getmtime(story.timestamps_path)
+            def add_asset(label: str, path: Optional[str], unit: str) -> bool:
+                if not path:
+                    asset_table.add_row(
+                        label,
+                        "[yellow]No path configured[/]",
+                        "—",
+                        "—",
+                        "—",
+                    )
+                    return False
+                if os.path.exists(path):
+                    size_bytes = os.path.getsize(path)
+                    if unit == "MB":
+                        size_value = size_bytes / 1024 / 1024
+                    else:
+                        size_value = size_bytes / 1024
                     modified_time = datetime.fromtimestamp(
-                        modified).strftime('%Y-%m-%d %H:%M:%S')
-                    click.echo(f"\n📁 Timestamps:")
-                    click.echo(f"  Path: {story.timestamps_path}")
-                    click.echo(f"  Size: {size:.2f} KB")
-                    click.echo(f"  Modified: {modified_time}")
-                else:
-                    click.echo(
-                        f"\n❌ Timestamps file missing: {story.timestamps_path}")
-            else:
-                click.echo("\n⚠️ No timestamps path in database")
+                        os.path.getmtime(path)
+                    ).strftime('%Y-%m-%d %H:%M:%S')
+                    asset_table.add_row(
+                        label,
+                        "[green]Available[/]",
+                        path,
+                        f"{size_value:.2f} {unit}",
+                        modified_time,
+                    )
+                    return True
 
-            # Check video file
+                asset_table.add_row(
+                    label,
+                    "[red]Missing file[/]",
+                    path,
+                    "—",
+                    "—",
+                )
+                return False
+
+            has_audio = add_asset("TTS Audio", story.audio_path, "KB")
+            has_timestamps = add_asset(
+                "Timestamps", story.timestamps_path, "KB"
+            )
             video_dir = os.path.join("demo", "videos", story.id)
             video_path = os.path.join(video_dir, "final.mp4")
-            if os.path.exists(video_path):
-                size = os.path.getsize(video_path) / 1024 / 1024  # MB
-                modified = os.path.getmtime(video_path)
-                modified_time = datetime.fromtimestamp(
-                    modified).strftime('%Y-%m-%d %H:%M:%S')
-                click.echo(f"\n📁 Video:")
-                click.echo(f"  Path: {video_path}")
-                click.echo(f"  Size: {size:.2f} MB")
-                click.echo(f"  Modified: {modified_time}")
-            else:
-                click.echo("\n⚠️ No video file found")
+            has_video = add_asset("Video", video_path, "MB")
+
+            console.print(asset_table)
 
             # Status consistency check
-            has_audio = story.audio_path and os.path.exists(story.audio_path)
-            has_timestamps = story.timestamps_path and os.path.exists(
-                story.timestamps_path)
-            has_video = os.path.exists(video_path)
+            alerts: List[Text] = []
+            status_value = (
+                story.status if isinstance(story.status, StoryStatus) else StoryStatus(story.status)
+            )
+            if status_value == StoryStatus.NEW and (has_audio or has_timestamps or has_video):
+                alerts.append(Text("Status is NEW but files exist", style="yellow"))
+            elif status_value == StoryStatus.AUDIO_GENERATED and not has_audio:
+                alerts.append(Text("Audio generated status but audio file missing", style="red"))
+            elif status_value == StoryStatus.READY and (not has_audio or not has_timestamps):
+                alerts.append(Text("READY status but required files missing", style="red"))
+            elif status_value == StoryStatus.VIDEO_READY and not has_video:
+                alerts.append(Text("VIDEO_READY status but video missing", style="red"))
+            elif status_value == StoryStatus.VIDEO_PROCESSING and has_video:
+                alerts.append(Text("VIDEO_PROCESSING status but video already exists", style="yellow"))
 
-            click.echo("\n🔍 Status Check:")
-            if story.status == StoryStatus.NEW and (has_audio or has_timestamps or has_video):
-                click.echo("  ⚠️ Status is NEW but files exist")
-            elif story.status == StoryStatus.AUDIO_GENERATED and not has_audio:
-                click.echo(
-                    "  ❌ Status is AUDIO_GENERATED but audio file missing")
-            elif story.status == StoryStatus.READY and (not has_audio or not has_timestamps):
-                click.echo("  ❌ Status is READY but required files missing")
-            elif story.status == StoryStatus.VIDEO_READY and not has_video:
-                click.echo("  ❌ Status is VIDEO_READY but video file missing")
-            elif story.status == StoryStatus.VIDEO_PROCESSING and has_video:
-                click.echo("  ⚠️ Status is VIDEO_PROCESSING but video exists")
+            if alerts:
+                summary = Text()
+                for alert in alerts:
+                    summary.append("• ")
+                    summary.append(alert)
+                    summary.append("\n")
+                console.print(
+                    Panel(
+                        summary,
+                        border_style="yellow",
+                        title="Status Check",
+                    )
+                )
             else:
-                click.echo("  ✅ Status consistent with files")
+                console.print(
+                    Panel.fit(
+                        "Status consistent with files.",
+                        border_style="green",
+                        title="Status Check",
+                    )
+                )
 
 
 @files.command()
@@ -496,18 +892,35 @@ def preview(story_id: Optional[str], file_type: str):
 
         story = db.get_story(story_id)
         if not story:
-            click.echo(f"Story {story_id} not found.")
+            console.print(
+                Panel.fit(
+                    f"Story '{story_id}' was not found.",
+                    title="Missing Story",
+                    border_style="red",
+                )
+            )
             return
 
         if file_type in ['text', 'all']:
-            click.echo("\n📝 Story Text:")
-            click.echo("=" * 50)
-            click.echo(story.text)
+            console.print(
+                Panel(
+                    story.text,
+                    title="Story Text",
+                    border_style="green",
+                    padding=(1, 2),
+                )
+            )
 
         if file_type in ['timestamps', 'all'] and story.timestamps_path:
             if os.path.exists(story.timestamps_path):
-                click.echo("\n⏱️ Timestamps:")
-                click.echo("=" * 50)
+                table = Table(
+                    title="Timestamps",
+                    box=box.SIMPLE_HEAVY,
+                    header_style="bold cyan",
+                )
+                table.add_column("Start", justify="right")
+                table.add_column("End", justify="right")
+                table.add_column("Text", style="white", overflow="fold")
                 try:
                     with open(story.timestamps_path, 'r', encoding='utf-8') as f:
                         timestamps_data = json.load(f)
@@ -517,7 +930,11 @@ def preview(story_id: Optional[str], file_type: str):
                             start = segment.get('start', 0)
                             end = segment.get('end', 0)
                             text = segment.get('text', '').strip()
-                            click.echo(f"{start:.2f} → {end:.2f}: {text}")
+                            table.add_row(
+                                f"{start:.2f}s",
+                                f"{end:.2f}s",
+                                text or "—",
+                            )
                     else:  # ElevenLabs format
                         for segment in timestamps_data:
                             if 'characters' in segment and 'character_start_times_seconds' in segment:
@@ -526,13 +943,36 @@ def preview(story_id: Optional[str], file_type: str):
                                 text = ''.join(chars)
                                 start = times[0] if times else 0
                                 end = times[-1] if times else 0
-                                click.echo(f"{start:.2f} → {end:.2f}: {text}")
+                                table.add_row(
+                                    f"{start:.2f}s",
+                                    f"{end:.2f}s",
+                                    text or "—",
+                                )
+                    console.print(table)
                 except json.JSONDecodeError:
-                    click.echo("❌ Invalid JSON format in timestamps file")
+                    console.print(
+                        Panel.fit(
+                            "Invalid JSON format in timestamps file.",
+                            border_style="red",
+                            title="Timestamps Error",
+                        )
+                    )
                 except Exception as e:
-                    click.echo(f"❌ Error reading timestamps: {str(e)}")
+                    console.print(
+                        Panel.fit(
+                            f"Error reading timestamps: {str(e)}",
+                            border_style="red",
+                            title="Timestamps Error",
+                        )
+                    )
             else:
-                click.echo("\n❌ Timestamps file not found")
+                console.print(
+                    Panel.fit(
+                        "Timestamps file not found.",
+                        border_style="red",
+                        title="Timestamps",
+                    )
+                )
 
 
 def _show_available_stories() -> Optional[str]:
@@ -540,34 +980,60 @@ def _show_available_stories() -> Optional[str]:
     with get_db() as db:
         stories = db.get_all_stories()
         if not stories:
-            click.echo("No stories available.")
+            console.print(
+                Panel.fit(
+                    "No stories available.",
+                    border_style="yellow",
+                    title="Stories",
+                )
+            )
             return None
 
-        click.echo("\nAvailable Stories")
-        click.echo("=" * 50 + "\n")
+        table = Table(
+            title="Available Stories",
+            box=box.SIMPLE_HEAVY,
+            header_style="bold cyan",
+        )
+        table.add_column("#", justify="right")
+        table.add_column("Title", style="white", overflow="fold")
+        table.add_column("Status", style="bold")
+        table.add_column("Author", style="green")
+        table.add_column("Created", style="dim")
 
-        for i, story in enumerate(stories, 1):
-            title = story.title[:50] + \
-                "..." if len(story.title) > 50 else story.title
-            created = story.created_at.strftime('%Y-%m-%d %H:%M')
-            click.echo(f"{i}. {title}")
-            click.echo(f"   Status: {story.status}")
-            click.echo(f"   Author: {story.author}")
-            click.echo(f"   Created: {created}\n")
+        for index, story in enumerate(stories, 1):
+            title = story.title[:60] + "…" if len(story.title) > 60 else story.title
+            created = _format_timestamp(story.created_at)
+            status_value = (
+                story.status.value if isinstance(story.status, StoryStatus) else str(story.status)
+            )
+            table.add_row(
+                str(index),
+                title,
+                f"[{_status_style(story.status)}]{status_value}[/]",
+                story.author,
+                created,
+            )
 
-        click.echo("0. Cancel\n")
+        console.print(table)
+        console.print(Align.center(Text("Enter 0 to cancel", style="dim")))
 
         while True:
             try:
-                choice = click.prompt(
-                    "Select a story number", type=int, default=0)
-                if choice == 0:
-                    return None
-                if 1 <= choice <= len(stories):
-                    return stories[choice - 1].id
-                click.echo("Invalid choice. Please try again.")
-            except (ValueError, click.Abort):
+                choice = IntPrompt.ask("Select a story", default=0)
+            except (KeyboardInterrupt, EOFError):
                 return None
+
+            if choice == 0:
+                return None
+            if 1 <= choice <= len(stories):
+                return stories[choice - 1].id
+            console.print(
+                Panel.fit(
+                    "Invalid choice. Please try again.",
+                    border_style="red",
+                    title="Selection",
+                )
+            )
 
 
 @files.command()
@@ -590,7 +1056,13 @@ def backup(story_id: Optional[str], output_dir: str):
 
         story = db.get_story(story_id)
         if not story:
-            click.echo(f"Story {story_id} not found.")
+            console.print(
+                Panel.fit(
+                    f"Story '{story_id}' was not found.",
+                    title="Missing Story",
+                    border_style="red",
+                )
+            )
             return
 
         # Create backup directory
@@ -639,7 +1111,13 @@ def backup(story_id: Optional[str], output_dir: str):
                     files_copied.append(('Video', video_path))
 
                 if not files_copied:
-                    click.echo("⚠️ No files found to backup!")
+                    console.print(
+                        Panel.fit(
+                            "No files found to backup!",
+                            border_style="yellow",
+                            title="Backup",
+                        )
+                    )
                     return
 
                 # Create zip archive
@@ -651,12 +1129,30 @@ def backup(story_id: Optional[str], output_dir: str):
                             zipf.write(file_path, arcname)
 
             # Show summary
-            click.echo(f"\n✨ Created backup: {backup_path}")
-            click.echo("\nFiles included:")
+            table = Table(
+                title="Files Included",
+                box=box.SIMPLE_HEAVY,
+                header_style="bold cyan",
+            )
+            table.add_column("Type", style="bold")
+            table.add_column("Path", style="white", overflow="fold")
+            table.add_column("Size", justify="right")
             for file_type, path in files_copied:
-                size = os.path.getsize(path) / 1024  # KB
-                click.echo(
-                    f"  • {file_type}: {os.path.basename(path)} ({size:.2f} KB)")
+                size_kb = os.path.getsize(path) / 1024
+                table.add_row(
+                    file_type,
+                    path,
+                    f"{size_kb:.2f} KB",
+                )
+
+            console.print(
+                Panel.fit(
+                    f"Created backup: {backup_path}",
+                    border_style="green",
+                    title="Backup Complete",
+                )
+            )
+            console.print(table)
 
         except Exception as e:
             if backup_path and os.path.exists(backup_path):
@@ -665,7 +1161,13 @@ def backup(story_id: Optional[str], output_dir: str):
                     os.remove(backup_path)
                 except:
                     pass
-            click.echo(f"❌ Error creating backup: {str(e)}")
+            console.print(
+                Panel.fit(
+                    f"Error creating backup: {str(e)}",
+                    border_style="red",
+                    title="Backup Failed",
+                )
+            )
             raise
 
 
@@ -675,7 +1177,13 @@ def backup(story_id: Optional[str], output_dir: str):
 def restore(backup_path: str, force: bool):
     """Restore story files from a backup archive."""
     if not os.path.exists(backup_path):
-        click.echo(f"Backup file not found: {backup_path}")
+        console.print(
+            Panel.fit(
+                f"Backup file not found: {backup_path}",
+                border_style="red",
+                title="Restore",
+            )
+        )
         return
 
     try:
@@ -691,20 +1199,29 @@ def restore(backup_path: str, force: bool):
             # Read story metadata
             metadata_path = os.path.join(temp_dir, "story.json")
             if not os.path.exists(metadata_path):
-                click.echo("❌ Invalid backup: missing story metadata")
+                console.print(
+                    Panel.fit(
+                        "Invalid backup: missing story metadata.",
+                        border_style="red",
+                        title="Restore",
+                    )
+                )
                 return
 
             with open(metadata_path, 'r', encoding='utf-8') as f:
                 metadata = json.load(f)
 
             # Confirm restoration
-            click.echo("\nRestore the following story?")
-            click.echo(f"Title: {metadata['title']}")
-            click.echo(f"Author: {metadata['author']}")
-            click.echo(f"ID: {metadata['id']}")
+            details = Table.grid(padding=(0, 2))
+            details.add_column(justify="right", style="bold cyan")
+            details.add_column(style="white")
+            details.add_row("Title", metadata['title'])
+            details.add_row("Author", metadata['author'])
+            details.add_row("ID", metadata['id'])
+            console.print(Panel.fit(details, title="Restore Preview", border_style="cyan"))
 
-            if not force and not click.confirm("\nProceed with restore?"):
-                click.echo("Restore cancelled.")
+            if not force and not Confirm.ask("Proceed with restore?", default=False):
+                console.print(Align.center(Text("Restore cancelled.", style="dim")))
                 return
 
             # Restore files
@@ -759,25 +1276,61 @@ def restore(backup_path: str, force: bool):
 
                 existing_story = db.get_story(story_id)
                 if existing_story:
-                    if not force and not click.confirm(f"\nStory {story_id} already exists. Update it?"):
-                        click.echo("Database update skipped.")
+                    if not force and not Confirm.ask(
+                        f"Story {story_id} already exists. Update it?",
+                        default=True,
+                    ):
+                        console.print(Align.center(Text("Database update skipped.", style="dim")))
                     else:
                         db.delete_story(story_id)
                         db.add_story(story)
-                        click.echo("Updated existing story in database.")
+                        console.print(
+                            Panel.fit(
+                                "Updated existing story in database.",
+                                border_style="green",
+                                title="Database",
+                            )
+                        )
                 else:
                     db.add_story(story)
-                    click.echo("Added new story to database.")
+                    console.print(
+                        Panel.fit(
+                            "Added new story to database.",
+                            border_style="green",
+                            title="Database",
+                        )
+                    )
 
             # Show summary
-            click.echo("\n✨ Restore completed successfully")
-            click.echo("\nFiles restored:")
+            table = Table(
+                title="Files Restored",
+                box=box.SIMPLE_HEAVY,
+                header_style="bold cyan",
+            )
+            table.add_column("Type", style="bold")
+            table.add_column("Path", style="white", overflow="fold")
+            table.add_column("Size", justify="right")
             for file_type, path in files_restored:
-                size = os.path.getsize(path) / 1024  # KB
-                click.echo(f"  • {file_type}: {path} ({size:.2f} KB)")
+                size_kb = os.path.getsize(path) / 1024
+                table.add_row(file_type, path, f"{size_kb:.2f} KB")
+
+            console.print(
+                Panel.fit(
+                    "Restore completed successfully.",
+                    border_style="green",
+                    title="Restore Complete",
+                )
+            )
+            console.print(table)
 
     except Exception as e:
-        click.echo(f"❌ Error restoring backup: {str(e)}")
+        console.print(
+            Panel.fit(
+                f"Error restoring backup: {str(e)}",
+                border_style="red",
+                title="Restore Failed",
+            )
+        )
         raise
 
 
